@@ -1,0 +1,298 @@
+<div class="room-container">
+    <!-- Header -->
+    <div class="room-header">
+        <div class="room-info">
+            <h2 class="room-title">
+                Room: <span id="roomId">{{.RoomID}}</span>
+                <span id="roomLockedIndicator" style="display: none; margin-left: 10px; color: #ef4444; font-size: 14px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: middle; margin-right: 4px;">
+                        <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
+                    </svg>
+                    Locked
+                </span>
+            </h2>
+            <div class="participant-count">
+                <svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <span id="participantCount">{{.Users}}</span> participants
+            </div>
+        </div>
+        <button class="btn btn-copy" onclick="copyRoomLink()">
+            <svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+            Copy Room Link
+        </button>
+    </div>
+
+    <!-- Main Content -->
+    <div class="room-content">
+        <!-- Video Grid -->
+        <div class="video-section">
+            <div id="videoGrid" class="video-grid">
+                <!-- Local video -->
+                <div class="video-container local-video-container">
+                    <video id="localVideo" autoplay muted playsinline></video>
+                    <div class="video-overlay">
+                        <span class="participant-name">You</span>
+                    </div>
+                    <div class="video-status">
+                        <span id="localAudioStatus" class="status-icon">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                            </svg>
+                        </span>
+                        <span id="localVideoStatus" class="status-icon">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                                <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+                            </svg>
+                        </span>
+                    </div>
+                </div>
+                <!-- Remote videos will be added here dynamically -->
+            </div>
+        </div>
+
+        <!-- Chat Sidebar -->
+        <div id="chatSidebar" class="chat-sidebar hidden">
+            <div class="chat-header">
+                <h3>Chat</h3>
+                <button class="btn-icon" onclick="toggleChat()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div id="chatMessages" class="chat-messages"></div>
+            <div class="chat-input-container">
+                <input type="text" id="chatInput" class="chat-input" placeholder="Type a message..." onkeypress="handleChatKeyPress(event)" />
+                <button class="btn-send" onclick="sendChatMessage()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Host Admin Controls Panel -->
+    <div id="adminPanel" class="admin-panel hidden">
+        <div class="admin-header">
+            <h3>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                </svg>
+                Host Controls
+            </h3>
+            <button class="btn-icon" onclick="toggleAdminPanel()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+        
+        <div class="admin-tabs">
+            <button class="admin-tab active" onclick="switchAdminTab('securityTab')">Security</button>
+            <button class="admin-tab" onclick="switchAdminTab('participantsTab')">Participants</button>
+            <button class="admin-tab" onclick="switchAdminTab('waitingTab')">Waiting (<span id="waitingCount">0</span>)</button>
+            <button class="admin-tab" onclick="switchAdminTab('recordingTab')">Recording</button>
+        </div>
+
+        <div class="admin-content">
+            <!-- Security Tab -->
+            <div id="securityTab" class="admin-tab-content active">
+                <div class="control-item">
+                    <div class="control-info">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
+                        </svg>
+                        <div>
+                            <strong>Lock Room</strong>
+                            <p>Prevent new participants from joining</p>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="lockRoomToggle" onchange="toggleRoomLock()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div class="control-item">
+                    <div class="control-info">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+                        </svg>
+                        <div>
+                            <strong>Enable Chat</strong>
+                            <p>Allow participants to send messages</p>
+                        </div>
+                    </div>
+                    <label class="toggle-switch active">
+                        <input type="checkbox" id="chatToggle" checked onchange="toggleChatPermission()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div class="control-item">
+                    <div class="control-info">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                        </svg>
+                        <div>
+                            <strong>Mute All Participants</strong>
+                            <p>Mute all participants except co-hosts</p>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="muteAllToggle" onchange="toggleMuteAll()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Participants Tab -->
+            <div id="participantsTab" class="admin-tab-content">
+                <div id="participantsList" class="participants-list">
+                    <!-- Will be populated dynamically -->
+                </div>
+            </div>
+
+            <!-- Waiting Room Tab -->
+            <div id="waitingTab" class="admin-tab-content">
+                <div id="waitingList" class="waiting-list">
+                    <div class="empty-state">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                        </svg>
+                        <p>No one in waiting room</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recording Tab -->
+            <div id="recordingTab" class="admin-tab-content">
+                <div class="recording-controls">
+                    <div class="recording-status">
+                        <div id="recordingIndicator" class="recording-indicator">
+                            <span class="rec-dot"></span>
+                            <span id="recordingTime">00:00:00</span>
+                        </div>
+                        <p id="recordingStatus">Recording is not active</p>
+                    </div>
+                    <button id="recordBtn" class="btn btn-primary btn-large" onclick="toggleRecording()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <circle cx="12" cy="12" r="8"/>
+                        </svg>
+                        Start Recording
+                    </button>
+                    <div class="recording-info">
+                        <p><strong>Note:</strong> All participants will be notified when recording starts</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Participants Panel (for all users) -->
+    <div id="participantsPanel" class="participants-panel hidden">
+        <div class="panel-header">
+            <h3>Participants (<span id="participantCountPanel">0</span>)</h3>
+            <button class="btn-icon" onclick="toggleParticipantsPanel()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+        <div id="allParticipantsList" class="all-participants-list">
+            <!-- Will be populated dynamically -->
+        </div>
+    </div>
+
+    <!-- Controls Bar -->
+    <div class="controls-bar">
+        <div class="controls-group">
+            <button id="micBtn" class="control-btn active" onclick="toggleMicrophone()" title="Mute/Unmute">
+                <svg class="icon-on" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                    <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+                <svg class="icon-off" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
+                    <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
+                </svg>
+            </button>
+
+            <button id="videoBtn" class="control-btn active" onclick="toggleCamera()" title="Stop/Start Video">
+                <svg class="icon-on" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+                </svg>
+                <svg class="icon-off" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
+                    <path d="M21 6.5l-4 4V7c0-.55-.45-1-1-1H9.82L21 17.18V6.5zM3.27 2L2 3.27 4.73 6H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.21 0 .39-.08.54-.18L19.73 21 21 19.73 3.27 2z"/>
+                </svg>
+            </button>
+
+            <button id="screenBtn" class="control-btn" onclick="toggleScreenShare()" title="Share Screen">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.11-.9-2-2-2H4c-1.11 0-2 .89-2 2v10c0 1.1.89 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="controls-group">
+            <button class="control-btn" onclick="toggleChat()" title="Toggle Chat">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+                </svg>
+                <span id="chatNotification" class="notification-badge" style="display: none;">0</span>
+            </button>
+
+            <button class="control-btn" onclick="toggleParticipantsPanel()" title="Participants">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
+                </svg>
+            </button>
+
+            <button id="adminBtn" class="control-btn" onclick="toggleAdminPanel()" title="Host Controls" style="display: none;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
+                </svg>
+                <span class="host-badge">👑</span>
+            </button>
+
+            <button class="control-btn" onclick="toggleSettings()" title="Settings">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+                </svg>
+            </button>
+
+            <button class="control-btn btn-danger" onclick="leaveRoom()" title="Leave Room">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11H7v-2h10v2z"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Settings Modal -->
+<div id="settingsModal" class="modal">
+    <div class="modal-content">
+        <span class="modal-close" onclick="toggleSettings()">&times;</span>
+        <h2>Settings</h2>
+        <div class="settings-group">
+            <label>Select Camera</label>
+            <select id="cameraSelect" class="input-field" onchange="changeCamera()"></select>
+        </div>
+        <div class="settings-group">
+            <label>Select Microphone</label>
+            <select id="microphoneSelect" class="input-field" onchange="changeMicrophone()"></select>
+        </div>
+        <div class="settings-group">
+            <label>Select Speaker</label>
+            <select id="speakerSelect" class="input-field" onchange="changeSpeaker()"></select>
+        </div>
+    </div>
+</div>
+
+<script src="/js/room.js"></script>

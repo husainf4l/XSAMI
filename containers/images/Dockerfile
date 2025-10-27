@@ -1,16 +1,33 @@
-from golang:1.16-alpine 3.14
+FROM golang:1.23-alpine AS builder
 WORKDIR /src
 
+# Install build dependencies
+RUN apk add --no-cache git
+
+# Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download
+
+# Copy source code
 COPY . .
 
-Run CGO_ENABLED=0 GO BUILD -o /bin/app ./cmd
+# Build application
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /bin/app ./cmd
 
-from alpine:3.14
-WORKDIR /src
-COPY --from=0 /bin/app /bin/app
-COPY --from=0 /src/assets src/assets
-COPY --from=0 /src/views src/views
+# Final stage
+FROM alpine:3.19
+WORKDIR /app
 
-ENTRYPOINT ["/bin/app"]
+# Install ca-certificates for HTTPS
+RUN apk --no-cache add ca-certificates
+
+# Copy binary and assets
+COPY --from=builder /bin/app /app/
+COPY --from=builder /src/assets /app/assets
+COPY --from=builder /src/views /app/views
+
+# Expose port
+EXPOSE 8080
+
+# Run application
+ENTRYPOINT ["/app/app"]
