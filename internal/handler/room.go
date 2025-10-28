@@ -193,6 +193,7 @@ func RoomWebSocket(c *websocket.Conn) {
 			// Messages are forwarded to target peer
 			if targetPeerID, hasTarget := data["targetPeerId"].(string); hasTarget {
 				// This is a direct message to another peer
+				log.Printf("Forwarding %s from %s to %s", event, peerID, targetPeerID)
 				data["peerId"] = peerID // Add sender ID
 				delete(data, "targetPeerId") // Remove target from forwarded message
 				
@@ -551,6 +552,69 @@ func RoomWebSocket(c *websocket.Conn) {
 						// Remove the peer connection
 						room.Peers.RemovePeer(targetPeerID)
 					}
+				}
+			}
+			
+		// ============= RAISED HANDS =============
+		case "raise-hand":
+			// Add participant to raised hands list
+			room.RaiseHand(peerID)
+			
+			// Broadcast to all participants
+			broadcast := map[string]interface{}{
+				"event": "hand-raised",
+				"data": map[string]interface{}{
+					"peerId": peerID,
+					"timestamp": time.Now().Unix(),
+				},
+			}
+			room.Peers.BroadcastToAll(broadcast)
+			log.Printf("Hand raised by peer %s", peerID)
+			
+		case "lower-hand":
+			// Remove participant from raised hands list
+			room.LowerHand(peerID)
+			
+			// Broadcast to all participants
+			broadcast := map[string]interface{}{
+				"event": "hand-lowered",
+				"data": map[string]interface{}{
+					"peerId": peerID,
+				},
+			}
+			room.Peers.BroadcastToAll(broadcast)
+			log.Printf("Hand lowered by peer %s", peerID)
+			
+		case "clear-all-hands":
+			// Host/co-host can clear all raised hands
+			if room.IsHostOrCoHost(peerID) {
+				room.ClearAllHands()
+				
+				broadcast := map[string]interface{}{
+					"event": "all-hands-cleared",
+					"data": map[string]interface{}{
+						"message": "All hands have been cleared",
+					},
+				}
+				room.Peers.BroadcastToAll(broadcast)
+				log.Println("All hands cleared")
+			}
+			
+		// ============= REACTIONS =============
+		case "reaction":
+			// Broadcast reaction to all participants
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				emoji, hasEmoji := data["emoji"].(string)
+				if hasEmoji {
+					broadcast := map[string]interface{}{
+						"event": "reaction",
+						"data": map[string]interface{}{
+							"peerId": peerID,
+							"emoji":  emoji,
+						},
+					}
+					room.Peers.BroadcastToAll(broadcast)
+					log.Printf("Reaction %s from peer %s", emoji, peerID)
 				}
 			}
 		}

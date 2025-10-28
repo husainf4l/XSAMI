@@ -31,6 +31,9 @@ type Room struct {
 	IsRecording      bool              // Recording status
 	RecordingStartTime time.Time       // When recording started
 	
+	// Reactions & Engagement
+	RaisedHands      map[string]time.Time // Participants with raised hands
+	
 	PermLock         sync.RWMutex      // Lock for permissions and settings
 }
 
@@ -85,6 +88,7 @@ func CreateRoom(uuid string) *Room {
 		ScreenSharePerms:  make(map[string]bool),   // Track who can share screen
 		MutedParticipants: make(map[string]bool),
 		WaitingRoom:       make(map[string]*WaitingParticipant),
+		RaisedHands:       make(map[string]time.Time), // Track raised hands with timestamps
 		IsLocked:          false,
 		IsChatDisabled:    false,
 		IsRecording:       false,
@@ -484,4 +488,59 @@ func (r *Room) RequestScreenShare(peerID string) {
 	
 	// For others, send request to host
 	log.Printf("Peer %s requesting screen share permission", peerID)
+}
+
+// ============= RAISED HANDS =============
+
+// RaiseHand adds a participant's hand to the raised hands list
+func (r *Room) RaiseHand(peerID string) {
+	r.PermLock.Lock()
+	defer r.PermLock.Unlock()
+	
+	if _, exists := r.RaisedHands[peerID]; !exists {
+		r.RaisedHands[peerID] = time.Now()
+		log.Printf("Hand raised by peer: %s", peerID)
+	}
+}
+
+// LowerHand removes a participant's hand from the raised hands list
+func (r *Room) LowerHand(peerID string) {
+	r.PermLock.Lock()
+	defer r.PermLock.Unlock()
+	
+	if _, exists := r.RaisedHands[peerID]; exists {
+		delete(r.RaisedHands, peerID)
+		log.Printf("Hand lowered by peer: %s", peerID)
+	}
+}
+
+// ClearAllHands removes all raised hands (host action)
+func (r *Room) ClearAllHands() {
+	r.PermLock.Lock()
+	defer r.PermLock.Unlock()
+	
+	r.RaisedHands = make(map[string]time.Time)
+	log.Println("All hands cleared by host")
+}
+
+// GetRaisedHands returns all participants with raised hands and timestamps
+func (r *Room) GetRaisedHands() map[string]time.Time {
+	r.PermLock.RLock()
+	defer r.PermLock.RUnlock()
+	
+	// Create a copy to avoid race conditions
+	hands := make(map[string]time.Time, len(r.RaisedHands))
+	for peerID, timestamp := range r.RaisedHands {
+		hands[peerID] = timestamp
+	}
+	return hands
+}
+
+// HasRaisedHand checks if a specific participant has their hand raised
+func (r *Room) HasRaisedHand(peerID string) bool {
+	r.PermLock.RLock()
+	defer r.PermLock.RUnlock()
+	
+	_, exists := r.RaisedHands[peerID]
+	return exists
 }

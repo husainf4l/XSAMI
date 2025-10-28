@@ -1,0 +1,20 @@
+/* stylelint-disable */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background-secondary text-text-primary;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-background-card/80 backdrop-blur-xl border border-border;
+  }
+  
+  .glass-dark {
+    @apply bg-background-primary/80 backdrop-blur-xl border border-border;
+  }
+}
