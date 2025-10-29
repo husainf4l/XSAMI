@@ -51,6 +51,7 @@ export default function RoomPage() {
 
   const {
     localStream,
+    screenStream,
     peerConnections,
     mediaSettings,
     myUsername,
@@ -62,6 +63,7 @@ export default function RoomPage() {
     recordingState,
     activeSharingPeerId,
     setLocalStream,
+    setScreenStream,
     setRoomId,
     setMyUsername,
     toggleAudio,
@@ -75,7 +77,7 @@ export default function RoomPage() {
   } = useRoomStore();
 
   // Initialize WebRTC signaling
-  useWebRTCSignaling(roomId);
+  const { renegotiatePeerConnection } = useWebRTCSignaling(roomId, screenStream || undefined);
 
   // Initialize chat
   const { sendMessage, messages, isChatEnabled } = useChat(roomId);
@@ -221,50 +223,33 @@ export default function RoomPage() {
       // Stop screen sharing
       console.log('🛑 Stopping screen share');
       toggleScreenShare();
-      
-      // Clear active sharing peer locally
       setActiveSharingPeer(null);
-      
-      // Notify other participants
+      setScreenStream(null); // Clear screen stream
       webSocketService.send({
         event: 'screen-share-stopped',
         data: { peerId: myPeerId },
       });
-      
-      // Switch back to camera
-      if (cameraStream) {
-        // Stop screen stream
-        if (localStream) {
-          webRTCService.stopStream(localStream);
+
+      // Remove screen track from all peer connections
+      peerConnections.forEach((peer) => {
+        const senders = peer.connection.getSenders();
+        const screenSender = senders.find((s) => s.track?.kind === 'video' && s.track.label.includes('screen'));
+        if (screenSender) {
+          screenSender.replaceTrack(null);
         }
-        
-        setLocalStream(cameraStream);
-        
-        // Update all peer connections with camera stream
-        peerConnections.forEach((peer) => {
-          const senders = peer.connection.getSenders();
-          const videoSender = senders.find((s) => s.track?.kind === 'video');
-          if (videoSender && cameraStream.getVideoTracks()[0]) {
-            videoSender.replaceTrack(cameraStream.getVideoTracks()[0]);
-          }
-        });
-      }
+      });
     } else {
       // Start screen sharing
       try {
         console.log('📺 Starting screen share');
         const screenStream = await webRTCService.getDisplayMedia();
+        console.log('📺 Screen stream obtained:', screenStream.getVideoTracks().map(t => t.label));
+        setScreenStream(screenStream); // Store screen stream
         toggleScreenShare();
-        
-        // Set active sharing peer locally (since backend doesn't broadcast to self)
         setActiveSharingPeer(myPeerId);
-        
-        // Save current camera stream if not already saved
         if (!cameraStream && localStream) {
           setCameraStream(localStream);
         }
-        
-        // Notify other participants
         webSocketService.send({
           event: 'screen-share-started',
           data: { 
@@ -272,45 +257,43 @@ export default function RoomPage() {
             username: myUsername,
           },
         });
-        
-        // Replace video track in peer connections with screen
+
+        // Add screen track to all peer connections
         peerConnections.forEach((peer) => {
           const senders = peer.connection.getSenders();
-          const videoSender = senders.find((s) => s.track?.kind === 'video');
-          if (videoSender && screenStream.getVideoTracks()[0]) {
-            console.log(`📤 Replacing video track for peer: ${peer.username}`);
-            videoSender.replaceTrack(screenStream.getVideoTracks()[0]);
+          const screenTrack = screenStream.getVideoTracks()[0];
+          if (screenTrack) {
+            // Only add if not already present
+            const alreadyAdded = senders.some((s) => s.track?.id === screenTrack.id);
+            if (!alreadyAdded) {
+              peer.connection.addTrack(screenTrack, screenStream);
+              console.log(`📺 Added screen track to peer ${peer.id}`);
+            }
           }
         });
 
-        // When screen share ends, switch back to camera
+        // Renegotiate all peer connections to send the new screen track
+        peerConnections.forEach((peer) => {
+          renegotiatePeerConnection(peer.id);
+        });
+
+        // When screen share ends, remove screen track from all peer connections
         screenStream.getVideoTracks()[0].onended = async () => {
           console.log('📺 Screen share ended (user stopped sharing)');
           toggleScreenShare();
-          
-          // Clear active sharing peer locally
           setActiveSharingPeer(null);
-          
-          // Notify other participants
           webSocketService.send({
             event: 'screen-share-stopped',
             data: { peerId: myPeerId },
           });
-          
-          if (cameraStream) {
-            setLocalStream(cameraStream);
-            
-            peerConnections.forEach((peer) => {
-              const senders = peer.connection.getSenders();
-              const videoSender = senders.find((s) => s.track?.kind === 'video');
-              if (videoSender && cameraStream.getVideoTracks()[0]) {
-                videoSender.replaceTrack(cameraStream.getVideoTracks()[0]);
-              }
-            });
-          }
+          peerConnections.forEach((peer) => {
+            const senders = peer.connection.getSenders();
+            const screenSender = senders.find((s) => s.track?.kind === 'video' && s.track.label.includes('screen'));
+            if (screenSender) {
+              screenSender.replaceTrack(null);
+            }
+          });
         };
-
-        setLocalStream(screenStream);
       } catch (error) {
         console.error('❌ Error sharing screen:', error);
         alert('Could not share screen. Please try again.');
@@ -321,6 +304,10 @@ export default function RoomPage() {
   const cleanup = () => {
     if (localStream) {
       webRTCService.stopStream(localStream);
+    }
+    if (screenStream) {
+      webRTCService.stopStream(screenStream);
+      setScreenStream(null);
     }
     webSocketService.disconnect();
     // Close all peer connections
@@ -453,9 +440,10 @@ export default function RoomPage() {
 
                 {/* Large Screen Share Video */}
                 <div className="w-full h-full rounded-lg overflow-hidden bg-black shadow-2xl">
+                  {/* Show the screen stream for the sharing user in the main area */}
                   {activeSharingPeerId === myPeerId ? (
                     <VideoPlayer
-                      stream={localStream}
+                      stream={screenStream} // Use stored screen stream
                       username={`${myUsername} (Screen)`}
                       peerId={myPeerId || undefined}
                       isLocal={true}
@@ -466,7 +454,20 @@ export default function RoomPage() {
                     />
                   ) : (
                     <VideoPlayer
-                      stream={peerConnections.get(activeSharingPeerId)?.stream || null}
+                      stream={(() => {
+                        const peer = peerConnections.get(activeSharingPeerId);
+                        if (!peer || !peer.stream) return null;
+                        const videoTracks = peer.stream.getVideoTracks();
+                        // Prefer a track labeled 'screen', fallback to the second video track if present
+                        let screenTrack = videoTracks.find(t => t.label.toLowerCase().includes('screen'));
+                        if (!screenTrack && videoTracks.length > 1) {
+                          // Assume the second video track is the screen if two are present
+                          screenTrack = videoTracks[1];
+                        }
+                        // Debug log
+                        console.log('Remote video tracks for sharing peer:', videoTracks.map(t => `${t.label} (${t.id})`));
+                        return screenTrack ? new MediaStream([screenTrack]) : null;
+                      })()}
                       username={peerConnections.get(activeSharingPeerId)?.username || 'Unknown'}
                       peerId={activeSharingPeerId}
                       isMuted={false}
@@ -491,7 +492,14 @@ export default function RoomPage() {
                 <div className="rounded-lg overflow-hidden border-2 border-primary/50 bg-background-card">
                   <div className="aspect-video">
                     <VideoPlayer
-                      stream={mediaSettings.screenSharing && cameraStream ? cameraStream : localStream}
+                      stream={(() => {
+                        // Always show camera stream in sidebar
+                        if (mediaSettings.screenSharing && cameraStream) {
+                          return cameraStream;
+                        }
+                        // If not sharing, show localStream
+                        return localStream;
+                      })()}
                       username={`${myUsername} (You)`}
                       peerId={myPeerId || undefined}
                       isLocal={true}
@@ -531,7 +539,14 @@ export default function RoomPage() {
                     >
                       <div className="aspect-video">
                         <VideoPlayer
-                          stream={peerId === activeSharingPeerId ? null : peer.stream || null}
+                          stream={(() => {
+                            // Always show camera stream in sidebar
+                            if (peerId === activeSharingPeerId && peer.stream) {
+                              const camTrack = peer.stream.getVideoTracks().find(t => !t.label.includes('screen'));
+                              return camTrack ? new MediaStream([camTrack]) : null;
+                            }
+                            return peer.stream || null;
+                          })()}
                           username={peerId === activeSharingPeerId ? `${peer.username || 'Unknown'} (Sharing Screen)` : (peer.username || 'Unknown')}
                           peerId={peerId}
                           isMuted={false}

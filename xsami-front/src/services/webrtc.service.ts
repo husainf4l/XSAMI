@@ -67,29 +67,53 @@ class WebRTCService {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log('🧊 ICE candidate generated:', event.candidate.candidate);
         onIceCandidate(event.candidate);
+      } else {
+        console.log('🧊 ICE candidate gathering complete');
       }
     };
 
-    pc.ontrack = onTrack;
+    pc.ontrack = (event) => {
+      console.log('🎵 Track received:', {
+        kind: event.track.kind,
+        id: event.track.id,
+        streams: event.streams.length,
+      });
+      onTrack(event);
+    };
 
     pc.onconnectionstatechange = () => {
+      console.log('🔗 Connection state:', pc.connectionState);
       onConnectionStateChange(pc.connectionState);
     };
 
     // Monitor ICE connection state
     pc.oniceconnectionstatechange = () => {
-      console.log('🧊 ICE connection state changed:', pc.iceConnectionState);
+      console.log('🧊 ICE connection state:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed') {
-        console.error('❌ ICE connection failed');
-        // Attempt ICE restart
-        pc.restartIce();
+        console.error('❌ ICE connection failed - attempting restart');
+        try {
+          pc.restartIce();
+          console.log('🔄 ICE restart initiated');
+        } catch (error) {
+          console.error('❌ ICE restart failed:', error);
+        }
+      } else if (pc.iceConnectionState === 'disconnected') {
+        console.warn('⚠️ ICE connection disconnected');
+      } else if (pc.iceConnectionState === 'connected') {
+        console.log('✅ ICE connection established');
       }
     };
 
     // Monitor ICE gathering state
     pc.onicegatheringstatechange = () => {
       console.log('🧊 ICE gathering state:', pc.iceGatheringState);
+    };
+
+    // Monitor signaling state
+    pc.onsignalingstatechange = () => {
+      console.log('📡 Signaling state:', pc.signalingState);
     };
 
     return pc;
@@ -161,6 +185,7 @@ class WebRTCService {
    * Close peer connection
    */
   closePeerConnection(pc: RTCPeerConnection): void {
+    console.log('🔒 Closing peer connection');
     pc.close();
   }
 
@@ -168,7 +193,11 @@ class WebRTCService {
    * Stop all tracks in a stream
    */
   stopStream(stream: MediaStream): void {
-    stream.getTracks().forEach((track) => track.stop());
+    console.log('🛑 Stopping media stream');
+    stream.getTracks().forEach((track) => {
+      console.log(`Stopping ${track.kind} track:`, track.id);
+      track.stop();
+    });
   }
 
   /**

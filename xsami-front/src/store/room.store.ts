@@ -15,6 +15,7 @@ interface RoomStore extends RoomState {
   // Peer connections
   peerConnections: Map<string, PeerConnection>;
   localStream: MediaStream | null;
+  screenStream: MediaStream | null;
   
   // Media settings
   mediaSettings: MediaSettings;
@@ -46,6 +47,7 @@ interface RoomStore extends RoomState {
   
   // Actions - Media
   setLocalStream: (stream: MediaStream | null) => void;
+  setScreenStream: (stream: MediaStream | null) => void;
   toggleAudio: () => void;
   toggleVideo: () => void;
   toggleScreenShare: () => void;
@@ -115,6 +117,7 @@ export const useRoomStore = create<RoomStore>((set, get) => ({
   
   peerConnections: new Map(),
   localStream: null,
+  screenStream: null,
   mediaSettings: initialMediaSettings,
   
   chatMessages: [],
@@ -169,6 +172,7 @@ export const useRoomStore = create<RoomStore>((set, get) => ({
   
   // Media actions
   setLocalStream: (stream) => set({ localStream: stream }),
+  setScreenStream: (stream) => set({ screenStream: stream }),
   
   toggleAudio: () => {
     const { localStream, mediaSettings } = get();

@@ -29,9 +29,10 @@ export function AdminPanel({ onClose }: AdminPanelProps) {
     isRoomLocked,
     isChatEnabled,
     canParticipantsShare,
-    setRoomLocked,
+    
     setChatEnabled,
     setCanParticipantsShare,
+    setRoomLocked,
   } = useRoomStore();
 
   // Only show to host
