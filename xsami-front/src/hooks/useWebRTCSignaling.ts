@@ -53,6 +53,9 @@ export function useWebRTCSignaling(roomId: string) {
   // Track if we've joined the room
   const hasJoined = useRef(false);
 
+  // Track peers who are actively screen sharing (announced via WebSocket)
+  const screenSharingPeers = useRef<Set<string>>(new Set());
+
   /**
    * Handle incoming remote tracks
    */
@@ -85,10 +88,51 @@ export function useWebRTCSignaling(roomId: string) {
     }
 
     // Detect if this is a screen share track
-    const isScreenTrack =
-      track.label.toLowerCase().includes('screen') ||
-      track.label.toLowerCase().includes('display') ||
-      stream.id.includes('screen');
+    // Method 1: Check displaySurface if available (most reliable native method)
+    let isScreenTrack = false;
+    if (track.kind === 'video') {
+      try {
+        const settings = track.getSettings();
+        if (settings.displaySurface) {
+          isScreenTrack = true;
+          console.log('🖥️ Screen detected via displaySurface:', settings.displaySurface);
+        }
+      } catch (error) {
+        // Ignore if not supported
+      }
+    }
+    
+    // Method 2: Fallback to label/ID checking
+    if (!isScreenTrack) {
+      isScreenTrack =
+        track.label.toLowerCase().includes('screen') ||
+        track.label.toLowerCase().includes('display') ||
+        track.label.toLowerCase().includes('window') ||
+        stream.id.includes('screen');
+    }
+    
+    // Method 3: Check if this peer has been announced as screen sharing
+    // If they're screen sharing and we receive a NEW video track AFTER they already have camera tracks
+    if (!isScreenTrack && screenSharingPeers.current.has(peerId) && track.kind === 'video') {
+      const hasExistingCameraTrack = peer.cameraStream && peer.cameraStream.getVideoTracks().length > 0;
+      const hasExistingScreenTrack = peer.screenStream && peer.screenStream.getVideoTracks().length > 0;
+      
+      // If peer already has camera but no screen yet, this new track is the screen
+      if (hasExistingCameraTrack && !hasExistingScreenTrack) {
+        isScreenTrack = true;
+        console.log('🖥️ Screen detected via WebSocket (new track after camera) for:', peerId);
+      } 
+      // If peer has neither camera nor screen yet, this first track is the camera
+      else if (!hasExistingCameraTrack && !hasExistingScreenTrack) {
+        isScreenTrack = false;
+        console.log('📹 First track is camera (screen coming next) for:', peerId);
+      }
+      // If peer already has screen, any new track is additional (likely camera renegotiation)
+      else if (hasExistingScreenTrack) {
+        isScreenTrack = false;
+        console.log('📹 Additional track after screen (treating as camera) for:', peerId);
+      }
+    }
 
     if (isScreenTrack) {
       console.log('🖥️ Screen track from:', peerId);
@@ -99,6 +143,7 @@ export function useWebRTCSignaling(roomId: string) {
       track.onended = () => {
         console.log('🛑 Screen track ended:', peerId);
         updatePeerScreenStream(peerId, null);
+        screenSharingPeers.current.delete(peerId);
         const state = useRoomStore.getState();
         if (state.activeSharingPeerId === peerId) {
           setActiveSharingPeer(null);
@@ -337,6 +382,9 @@ export function useWebRTCSignaling(roomId: string) {
         const { peerId } = message.data as PeerLeftMessage;
         console.log('👋 Peer left:', peerId);
 
+        // Clean up screen sharing tracking
+        screenSharingPeers.current.delete(peerId);
+
         const currentConnections = useRoomStore.getState().peerConnections;
         const peer = currentConnections.get(peerId);
         if (peer) {
@@ -438,17 +486,31 @@ export function useWebRTCSignaling(roomId: string) {
       case 'screen-share-started': {
         const { peerId } = message.data;
         console.log('🖥️ Peer started screen sharing:', peerId);
+        
+        // Mark this peer as screen sharing
+        // The next video track received will be detected as screen share
+        screenSharingPeers.current.add(peerId);
         setActiveSharingPeer(peerId);
+        
+        // Don't reclassify existing tracks - wait for the actual screen track to arrive
+        // The detection logic will properly classify new incoming tracks
         break;
       }
 
       case 'screen-share-stopped': {
         const { peerId } = message.data;
         console.log('🛑 Peer stopped screen sharing:', peerId);
+        
+        // Remove from screen sharing peers
+        screenSharingPeers.current.delete(peerId);
+        
         const state = useRoomStore.getState();
         if (state.activeSharingPeerId === peerId) {
           setActiveSharingPeer(null);
         }
+        
+        // Clear screen stream
+        updatePeerScreenStream(peerId, null);
         break;
       }
 
@@ -552,13 +614,23 @@ export function useWebRTCSignaling(roomId: string) {
     
     const currentConnections = useRoomStore.getState().peerConnections;
     currentConnections.forEach((peer) => {
-      console.log('➕ Adding screen stream to:', peer.id);
-      const addedSenders = webRTCService.addStreamToPeer(peer.connection, screenStream);
-      
-      // Trigger renegotiation if we added tracks
-      if (addedSenders.length > 0) {
-        console.log('🔄 Triggering renegotiation after adding screen tracks');
-        createAndSendOffer(peer.id, peer.connection);
+      // Skip if peer connection is not in a valid state
+      if (peer.connection.connectionState === 'closed' || peer.connection.connectionState === 'failed') {
+        console.log('⏭️ Skipping closed/failed peer connection:', peer.id);
+        return;
+      }
+
+      try {
+        console.log('➕ Adding screen stream to:', peer.id);
+        const addedSenders = webRTCService.addStreamToPeer(peer.connection, screenStream);
+        
+        // Trigger renegotiation if we added tracks
+        if (addedSenders.length > 0) {
+          console.log('🔄 Triggering renegotiation after adding screen tracks');
+          createAndSendOffer(peer.id, peer.connection);
+        }
+      } catch (error) {
+        console.error('❌ Error adding screen stream to peer:', peer.id, error);
       }
     });
   }, [screenStream, createAndSendOffer]);

@@ -137,7 +137,6 @@ class WebRTCService {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           cursor: 'always',
-          displaySurface: 'monitor',
         } as MediaTrackConstraints,
         audio: includeAudio,
       });

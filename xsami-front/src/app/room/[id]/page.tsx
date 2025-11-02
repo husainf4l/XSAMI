@@ -256,9 +256,10 @@ export default function RoomPage() {
         toggleScreenShare();
         setActiveSharingPeer(myPeerId);
         
-        // Store camera stream if not already stored
-        if (!cameraStream && localStream) {
+        // Always store camera stream when starting screen share
+        if (localStream) {
           setCameraStream(localStream);
+          console.log('💾 Stored camera stream for sidebar display');
         }
 
         webSocketService.send({
