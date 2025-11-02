@@ -537,6 +537,20 @@ export function useWebRTCSignaling(roomId: string) {
         setChatEnabled(false);
         break;
       }
+
+      case 'reaction': {
+        // Reactions are handled at the page component level via custom event
+        // This allows the page to manage temporary reaction animations
+        const { peerId, emoji } = message.data;
+        if (peerId && emoji) {
+          console.log('🎉 Reaction received:', emoji, 'from:', peerId);
+          // Dispatch custom event for the page to handle
+          window.dispatchEvent(new CustomEvent('peer-reaction', {
+            detail: { peerId, emoji }
+          }));
+        }
+        break;
+      }
     }
   }, [
     myPeerId,

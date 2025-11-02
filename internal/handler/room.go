@@ -653,29 +653,32 @@ func RoomWebSocket(c *websocket.Conn) {
 			// Add participant to raised hands list
 			room.RaiseHand(peerID)
 			
-			// Broadcast to all participants
+			// Broadcast to all participants (using same event name frontend expects)
 			broadcast := map[string]interface{}{
-				"event": "hand-raised",
+				"event": "raise-hand",
 				"data": map[string]interface{}{
-					"peerId": peerID,
+					"peerId":   peerID,
+					"username": username,
 					"timestamp": time.Now().Unix(),
 				},
 			}
 			room.Peers.BroadcastToAll(broadcast)
+			log.Printf("Hand raised by peer: %s", username)
 			log.Printf("Hand raised by peer %s", peerID)
 			
 		case "lower-hand":
 			// Remove participant from raised hands list
 			room.LowerHand(peerID)
 			
-			// Broadcast to all participants
+			// Broadcast to all participants (using same event name frontend expects)
 			broadcast := map[string]interface{}{
-				"event": "hand-lowered",
+				"event": "lower-hand",
 				"data": map[string]interface{}{
 					"peerId": peerID,
 				},
 			}
 			room.Peers.BroadcastToAll(broadcast)
+			log.Printf("Hand lowered by peer: %s", username)
 			log.Printf("Hand lowered by peer %s", peerID)
 			
 		case "clear-all-hands":
@@ -709,6 +712,24 @@ func RoomWebSocket(c *websocket.Conn) {
 					room.Peers.BroadcastToAll(broadcast)
 					log.Printf("Reaction %s from peer %s", emoji, peerID)
 				}
+			}
+			
+		// ============= CHAT =============
+		case "chat-message":
+			// Check if chat is enabled
+			if room.IsChatDisabled {
+				log.Printf("Chat message rejected from peer %s (chat disabled)", peerID)
+				continue
+			}
+			
+			// Broadcast chat message to all other participants (not the sender)
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				broadcast := map[string]interface{}{
+					"event": "chat-message",
+					"data":  data,
+				}
+				room.Peers.BroadcastToOthers(broadcast, peerID)
+				log.Printf("Chat message from %s: %v", username, data["message"])
 			}
 		}
 	}
