@@ -551,6 +551,26 @@ export function useWebRTCSignaling(roomId: string) {
         }
         break;
       }
+
+      case 'annotation-draw': {
+        // Annotations are handled at the page component level via custom event
+        const annotationData = message.data;
+        if (annotationData) {
+          console.log('✏️ Annotation draw received:', annotationData.tool);
+          // Dispatch custom event for the page to handle
+          window.dispatchEvent(new CustomEvent('annotation-draw', {
+            detail: annotationData
+          }));
+        }
+        break;
+      }
+
+      case 'annotation-clear': {
+        console.log('🧹 Annotation clear received');
+        // Dispatch custom event for the page to handle
+        window.dispatchEvent(new CustomEvent('annotation-clear'));
+        break;
+      }
     }
   }, [
     myPeerId,

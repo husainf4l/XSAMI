@@ -731,6 +731,29 @@ func RoomWebSocket(c *websocket.Conn) {
 				room.Peers.BroadcastToOthers(broadcast, peerID)
 				log.Printf("Chat message from %s: %v", username, data["message"])
 			}
+			
+		// ============= ANNOTATIONS =============
+		case "annotation-draw":
+			// Broadcast drawing annotation to all participants
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				broadcast := map[string]interface{}{
+					"event": "annotation-draw",
+					"data": data,
+				}
+				room.Peers.BroadcastToOthers(broadcast, peerID)
+				log.Printf("Annotation draw from peer %s", peerID)
+			}
+			
+		case "annotation-clear":
+			// Broadcast clear annotations to all participants
+			broadcast := map[string]interface{}{
+				"event": "annotation-clear",
+				"data": map[string]interface{}{
+					"peerId": peerID,
+				},
+			}
+			room.Peers.BroadcastToAll(broadcast)
+			log.Printf("Annotations cleared by peer %s", peerID)
 		}
 	}
 }

@@ -17,6 +17,7 @@ import {
   Check,
   Shield,
   Lock,
+  Pen,
 } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import VideoPlayer from '@/components/ui/VideoPlayer';
@@ -26,13 +27,15 @@ import { ParticipantsPanel } from '@/components/ParticipantsPanel';
 import SettingsModal from '@/components/SettingsModal';
 import RaisedHandButton from '@/components/RaisedHandButton';
 import ReactionPicker from '@/components/ReactionPicker';
+import AnnotationCanvas from '@/components/ui/AnnotationCanvas';
+import AnnotationToolbar from '@/components/ui/AnnotationToolbar';
 import { useRoomStore } from '@/store/room.store';
 import { webRTCService } from '@/services/webrtc.service';
 import { webSocketService } from '@/services/websocket.service';
 import { useWebRTCSignaling } from '@/hooks/useWebRTCSignaling';
 import { useChat } from '@/hooks/useChat';
 import { getWebSocketUrl, copyToClipboard } from '@/lib/utils';
-import type { ReactionType } from '@/types';
+import type { ReactionType, AnnotationData, AnnotationTool, AnnotationSettings } from '@/types';
 
 export default function RoomPage() {
   const params = useParams();
@@ -48,6 +51,15 @@ export default function RoomPage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [peerReactions, setPeerReactions] = useState<Map<string, ReactionType[]>>(new Map());
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null); // Keep camera stream separate
+  
+  // Annotation state
+  const [isAnnotating, setIsAnnotating] = useState(false);
+  const [annotations, setAnnotations] = useState<AnnotationData[]>([]);
+  const [annotationSettings, setAnnotationSettings] = useState<AnnotationSettings>({
+    tool: 'pen',
+    color: '#FF0000',
+    size: 3,
+  });
 
   const {
     localStream,
@@ -148,6 +160,28 @@ export default function RoomPage() {
     window.addEventListener('peer-reaction' as any, handlePeerReaction as any);
     return () => {
       window.removeEventListener('peer-reaction' as any, handlePeerReaction as any);
+    };
+  }, []);
+
+  // Listen for incoming annotations from other participants
+  useEffect(() => {
+    const handleAnnotationDraw = (event: CustomEvent) => {
+      const annotationData = event.detail as AnnotationData;
+      if (annotationData) {
+        setAnnotations((prev) => [...prev, annotationData]);
+      }
+    };
+
+    const handleAnnotationClear = () => {
+      setAnnotations([]);
+    };
+
+    window.addEventListener('annotation-draw' as any, handleAnnotationDraw as any);
+    window.addEventListener('annotation-clear' as any, handleAnnotationClear as any);
+    
+    return () => {
+      window.removeEventListener('annotation-draw' as any, handleAnnotationDraw as any);
+      window.removeEventListener('annotation-clear' as any, handleAnnotationClear as any);
     };
   }, []);
 
@@ -344,6 +378,55 @@ export default function RoomPage() {
     }
   };
 
+  // Annotation handlers
+  const handleAnnotationToggle = () => {
+    // Only allow annotation when screen is being shared
+    if (!activeSharingPeerId) {
+      alert('Start screen sharing first to enable annotations');
+      return;
+    }
+    console.log('🎨 Toggling annotation mode:', !isAnnotating);
+    setIsAnnotating(!isAnnotating);
+  };
+
+  const handleAnnotationDraw = (annotationData: AnnotationData) => {
+    console.log('✏️ Drawing annotation:', annotationData.type, 'with', annotationData.points.length, 'points');
+    
+    // Add to local annotations
+    setAnnotations((prev) => [...prev, annotationData]);
+    
+    // Broadcast to other participants
+    webSocketService.send({
+      event: 'annotation-draw',
+      data: annotationData,
+    });
+  };
+
+  const handleAnnotationClear = () => {
+    console.log('🧹 Clearing all annotations');
+    
+    // Clear local annotations
+    setAnnotations([]);
+    
+    // Broadcast clear to other participants
+    webSocketService.send({
+      event: 'annotation-clear',
+      data: {},
+    });
+  };
+
+  const handleToolChange = (tool: AnnotationTool) => {
+    setAnnotationSettings((prev) => ({ ...prev, tool }));
+  };
+
+  const handleColorChange = (color: string) => {
+    setAnnotationSettings((prev) => ({ ...prev, color }));
+  };
+
+  const handleSizeChange = (size: number) => {
+    setAnnotationSettings((prev) => ({ ...prev, size }));
+  };
+
   if (!isUsernameSet) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -427,43 +510,87 @@ export default function RoomPage() {
                   </span>
                 </div>
 
+                {/* Annotation Toolbar */}
+                {isAnnotating && activeSharingPeerId === myPeerId && (
+                  <div className="absolute top-4 right-4 z-30">
+                    <AnnotationToolbar
+                      onClose={() => setIsAnnotating(false)}
+                      tool={annotationSettings.tool}
+                      onToolChange={handleToolChange}
+                      color={annotationSettings.color}
+                      onColorChange={handleColorChange}
+                      size={annotationSettings.size}
+                      onSizeChange={handleSizeChange}
+                      onClear={handleAnnotationClear}
+                    />
+                  </div>
+                )}
+
                 {/* Large Screen Share Video */}
-                <div className="w-full h-full rounded-lg overflow-hidden bg-black shadow-2xl">
+                <div className="relative w-full h-full rounded-lg overflow-hidden bg-black shadow-2xl">
                   {/* Show the screen stream for the sharing user in the main area */}
                   {activeSharingPeerId === myPeerId ? (
-                    <VideoPlayer
-                      stream={screenStream} // Use stored screen stream
-                      username={`${myUsername} (Screen)`}
-                      peerId={myPeerId || undefined}
-                      isLocal={true}
-                      isMuted={!mediaSettings.audioEnabled}
-                      isVideoEnabled={true}
-                      isHandRaised={myPeerId ? raisedHands.has(myPeerId) : false}
-                      reactions={myPeerId ? peerReactions.get(myPeerId) : []}
-                    />
+                    <>
+                      <VideoPlayer
+                        stream={screenStream} // Use stored screen stream
+                        username={`${myUsername} (Screen)`}
+                        peerId={myPeerId || undefined}
+                        isLocal={true}
+                        isMuted={!mediaSettings.audioEnabled}
+                        isVideoEnabled={true}
+                        isHandRaised={myPeerId ? raisedHands.has(myPeerId) : false}
+                        reactions={myPeerId ? peerReactions.get(myPeerId) : []}
+                      />
+                      {/* Annotation Canvas Overlay */}
+                      <div className="absolute inset-0 z-20">
+                        <AnnotationCanvas
+                          isAnnotating={isAnnotating}
+                          tool={annotationSettings.tool}
+                          color={annotationSettings.color}
+                          size={annotationSettings.size}
+                          onAnnotationDraw={handleAnnotationDraw}
+                          remoteAnnotations={annotations}
+                          onClearAnnotations={handleAnnotationClear}
+                        />
+                      </div>
+                    </>
                   ) : (
-                    <VideoPlayer
-                      stream={(() => {
-                        const peer = peerConnections.get(activeSharingPeerId);
-                        if (!peer) return null;
-                        
-                        // Use dedicated screen stream
-                        const screenStream = peer.screenStream;
-                        
-                        console.log('📺 Main display for sharing peer:', {
-                          hasScreenStream: !!screenStream,
-                          screenStreamTracks: screenStream?.getTracks().map(t => `${t.kind}:${t.label}`) || []
-                        });
-                        
-                        return screenStream || null;
-                      })()}
-                      username={peerConnections.get(activeSharingPeerId)?.username || 'Unknown'}
-                      peerId={activeSharingPeerId}
-                      isMuted={false}
-                      isVideoEnabled={true}
-                      isHandRaised={raisedHands.has(activeSharingPeerId)}
-                      reactions={peerReactions.get(activeSharingPeerId) || []}
-                    />
+                    <>
+                      <VideoPlayer
+                        stream={(() => {
+                          const peer = peerConnections.get(activeSharingPeerId);
+                          if (!peer) return null;
+                          
+                          // Use dedicated screen stream
+                          const screenStream = peer.screenStream;
+                          
+                          console.log('📺 Main display for sharing peer:', {
+                            hasScreenStream: !!screenStream,
+                            screenStreamTracks: screenStream?.getTracks().map(t => `${t.kind}:${t.label}`) || []
+                          });
+                          
+                          return screenStream || null;
+                        })()}
+                        username={peerConnections.get(activeSharingPeerId)?.username || 'Unknown'}
+                        peerId={activeSharingPeerId}
+                        isMuted={false}
+                        isVideoEnabled={true}
+                        isHandRaised={raisedHands.has(activeSharingPeerId)}
+                        reactions={peerReactions.get(activeSharingPeerId) || []}
+                      />
+                      {/* Show annotations from presenter (view-only) */}
+                      <div className="absolute inset-0 z-20">
+                        <AnnotationCanvas
+                          isAnnotating={false}
+                          tool={annotationSettings.tool}
+                          color={annotationSettings.color}
+                          size={annotationSettings.size}
+                          onAnnotationDraw={() => {}}
+                          remoteAnnotations={annotations}
+                          onClearAnnotations={() => {}}
+                        />
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -682,6 +809,22 @@ export default function RoomPage() {
 
             {/* Reactions */}
             <ReactionPicker onReactionSelect={handleReactionSelect} />
+
+            {/* Annotations (only when screen sharing) */}
+            {activeSharingPeerId === myPeerId && (
+              <Button
+                onClick={handleAnnotationToggle}
+                variant={isAnnotating ? 'primary' : 'secondary'}
+                size="md"
+                className="gap-2"
+                title={isAnnotating ? 'Stop annotating' : 'Start annotating'}
+              >
+                <Pen className="w-5 h-5" />
+                <span className="hidden sm:inline">
+                  {isAnnotating ? 'Stop Annotating' : 'Annotate'}
+                </span>
+              </Button>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
