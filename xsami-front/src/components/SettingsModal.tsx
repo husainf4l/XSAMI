@@ -75,8 +75,21 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     
     setIsLoading(true);
     try {
-      const newStream = await webRTCService.changeAudioInput(localStream, deviceId);
-      setLocalStream(newStream);
+      // Stop old audio tracks
+      localStream.getAudioTracks().forEach(track => track.stop());
+      
+      // Get new stream with selected device
+      const newStream = await webRTCService.changeAudioInput(deviceId);
+      
+      // Replace audio tracks in local stream
+      const newAudioTrack = newStream.getAudioTracks()[0];
+      if (newAudioTrack) {
+        // Keep video tracks, replace audio
+        const videoTracks = localStream.getVideoTracks();
+        const combinedStream = new MediaStream([...videoTracks, newAudioTrack]);
+        setLocalStream(combinedStream);
+      }
+      
       setSelectedAudioInput(deviceId);
     } catch (error) {
       console.error('Error changing audio input:', error);
@@ -90,8 +103,21 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     
     setIsLoading(true);
     try {
-      const newStream = await webRTCService.changeVideoInput(localStream, deviceId);
-      setLocalStream(newStream);
+      // Stop old video tracks
+      localStream.getVideoTracks().forEach(track => track.stop());
+      
+      // Get new stream with selected device
+      const newStream = await webRTCService.changeVideoInput(deviceId);
+      
+      // Replace video tracks in local stream
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (newVideoTrack) {
+        // Keep audio tracks, replace video
+        const audioTracks = localStream.getAudioTracks();
+        const combinedStream = new MediaStream([...audioTracks, newVideoTrack]);
+        setLocalStream(combinedStream);
+      }
+      
       setSelectedVideoInput(deviceId);
     } catch (error) {
       console.error('Error changing video input:', error);

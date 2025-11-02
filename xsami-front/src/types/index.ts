@@ -3,16 +3,20 @@ export interface PeerConnection {
   id: string;
   connection: RTCPeerConnection;
   username: string;
-  stream?: MediaStream;
+  stream?: MediaStream; // Legacy: merged stream for backward compatibility
+  cameraStream?: MediaStream; // Separate camera stream
+  screenStream?: MediaStream; // Separate screen stream
 }
 
 export interface RTCConfig {
   iceServers: RTCIceServer[];
+  iceCandidatePoolSize?: number;
 }
 
 // WebSocket Message Types
 export type WebSocketEvent =
   | 'join'
+  | 'ping'
   | 'peers'
   | 'peer-joined'
   | 'peer-left'
@@ -48,7 +52,7 @@ export interface WebSocketMessage {
 
 export interface PeersMessage {
   yourId: string;
-  peers: string[];
+  peers: Array<{ peerId: string; username: string }> | string[]; // Support both formats for backwards compatibility
   isHost: boolean;
   hostId: string;
   roomLocked?: boolean;

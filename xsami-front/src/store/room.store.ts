@@ -42,6 +42,8 @@ interface RoomStore extends RoomState {
   addPeerConnection: (peerId: string, connection: PeerConnection) => void;
   removePeerConnection: (peerId: string) => void;
   updatePeerStream: (peerId: string, stream: MediaStream) => void;
+  updatePeerCameraStream: (peerId: string, stream: MediaStream | null) => void;
+  updatePeerScreenStream: (peerId: string, stream: MediaStream | null) => void;
   addParticipant: (peerId: string, username: string) => void;
   removeParticipant: (peerId: string) => void;
   
@@ -153,6 +155,26 @@ export const useRoomStore = create<RoomStore>((set, get) => ({
     const peer = peerConnections.get(peerId);
     if (peer) {
       peer.stream = stream;
+      peerConnections.set(peerId, peer);
+      set({ peerConnections });
+    }
+  },
+  
+  updatePeerCameraStream: (peerId, stream) => {
+    const peerConnections = new Map(get().peerConnections);
+    const peer = peerConnections.get(peerId);
+    if (peer) {
+      peer.cameraStream = stream || undefined;
+      peerConnections.set(peerId, peer);
+      set({ peerConnections });
+    }
+  },
+  
+  updatePeerScreenStream: (peerId, stream) => {
+    const peerConnections = new Map(get().peerConnections);
+    const peer = peerConnections.get(peerId);
+    if (peer) {
+      peer.screenStream = stream || undefined;
       peerConnections.set(peerId, peer);
       set({ peerConnections });
     }

@@ -59,9 +59,16 @@ var (
 var RoomConfig = webrtc.Configuration{
 	ICEServers: []webrtc.ICEServer{
 		{
-			URLs: []string{"stun:stun.l.google.com:19302"},
+			URLs: []string{
+				"stun:stun.l.google.com:19302",
+				"stun:stun1.l.google.com:19302",
+				"stun:stun2.l.google.com:19302",
+				"stun:stun3.l.google.com:19302",
+				"stun:stun4.l.google.com:19302",
+			},
 		},
 	},
+	SDPSemantics: webrtc.SDPSemanticsUnifiedPlan,
 }
 
 // CreateRoom creates or gets an existing room
@@ -81,6 +88,7 @@ func CreateRoom(uuid string) *Room {
 		Peers: &Peers{
 			TrackLocals: make(map[string]*webrtc.TrackLocalStaticRTP),
 			Connections: []PeerConnectionState{},
+			PeerTracks:  make(map[string]map[string]*webrtc.TrackLocalStaticRTP),
 		},
 		Hub:               hub,
 		HostPeerID:        "",                      // Will be set when first person joins
@@ -139,6 +147,7 @@ func CreateStream(uuid string) *Room {
 		Peers: &Peers{
 			TrackLocals: make(map[string]*webrtc.TrackLocalStaticRTP),
 			Connections: []PeerConnectionState{},
+			PeerTracks:  make(map[string]map[string]*webrtc.TrackLocalStaticRTP),
 		},
 		Hub: hub,
 	}

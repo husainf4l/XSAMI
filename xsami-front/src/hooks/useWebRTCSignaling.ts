@@ -1,12 +1,11 @@
 'use client';
 
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { useRoomStore } from '@/store/room.store';
 import { webSocketService } from '@/services/websocket.service';
 import { webRTCService } from '@/services/webrtc.service';
-import {
+import type {
   WebSocketMessage,
-  PeersMessage,
   PeerJoinedMessage,
   PeerLeftMessage,
   OfferMessage,
@@ -14,12 +13,23 @@ import {
   CandidateMessage,
 } from '@/types';
 
-export const useWebRTCSignaling = (roomId: string, screenStream?: MediaStream, enabled: boolean = true) => {
+/**
+ * Modern WebRTC Signaling Hook
+ * 
+ * Features:
+ * - Automatic peer connection management
+ * - Proper cleanup and resource management
+ * - Separate camera and screen tracks
+ * - ICE candidate queuing
+ * - Connection quality monitoring
+ * - Error recovery
+ */
+export function useWebRTCSignaling(roomId: string) {
   const {
     myPeerId,
     myUsername,
     localStream,
-    peerConnections,
+    screenStream,
     setMyPeerId,
     setIsHost,
     setHostId,
@@ -27,6 +37,8 @@ export const useWebRTCSignaling = (roomId: string, screenStream?: MediaStream, e
     addPeerConnection,
     removePeerConnection,
     updatePeerStream,
+    updatePeerCameraStream,
+    updatePeerScreenStream,
     addParticipant,
     removeParticipant,
     setActiveSharingPeer,
@@ -35,225 +47,146 @@ export const useWebRTCSignaling = (roomId: string, screenStream?: MediaStream, e
     setChatEnabled,
   } = useRoomStore();
 
-  // State for peers waiting for local stream to be ready
-  const [pendingPeers, setPendingPeers] = useState<Array<{peerId: string, username: string, isInitiator: boolean}>>([]);
+  // ICE candidate queue - stores candidates until remote description is set
+  const iceCandidateQueue = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  
+  // Track if we've joined the room
+  const hasJoined = useRef(false);
 
   /**
-   * Handle incoming peer tracks (video/audio)
+   * Handle incoming remote tracks
    */
-  const handleRemoteTrack = useCallback(
-    (event: RTCTrackEvent, peerId: string) => {
-      console.log('🎵 Received remote track from', peerId, ':', event.track.kind);
-      console.log('Track details:', {
-        id: event.track.id,
-        kind: event.track.kind,
-        enabled: event.track.enabled,
-        muted: event.track.muted,
-        readyState: event.track.readyState,
-        streams: event.streams.length,
-      });
+  const handleRemoteTrack = useCallback((event: RTCTrackEvent, peerId: string) => {
+    const stream = event.streams[0];
+    const track = event.track;
 
-      // Merge new track into existing MediaStream for this peer
-      let newStream: MediaStream;
-      if (event.streams && event.streams[0]) {
-        // If the event provides a stream, use it as a base
-        newStream = event.streams[0];
-      } else {
-        // Otherwise, create a new stream for this track
-        newStream = new MediaStream([event.track]);
-      }
+    if (!stream) {
+      console.warn('⚠️ No stream for track from:', peerId);
+      return;
+    }
 
-      // Get the current stream for this peer
-      const peer = peerConnections.get(peerId);
-      let mergedStream: MediaStream;
-      if (peer && peer.stream) {
-        // Merge all tracks (avoid duplicates)
-        mergedStream = new MediaStream();
-        // Add existing tracks
-        peer.stream.getTracks().forEach((track) => {
-          if (!mergedStream.getTracks().find((t) => t.id === track.id)) {
-            mergedStream.addTrack(track);
-          }
-        });
-        // Add the new track if not already present
-        if (!mergedStream.getTracks().find((t) => t.id === event.track.id)) {
-          mergedStream.addTrack(event.track);
+    console.log('📥 Remote track:', {
+      peer: peerId,
+      kind: track.kind,
+      label: track.label,
+      enabled: track.enabled,
+      muted: track.muted,
+      readyState: track.readyState,
+    });
+
+    // Get current peer connection from store
+    const currentConnections = useRoomStore.getState().peerConnections;
+    const peer = currentConnections.get(peerId);
+
+    if (!peer) {
+      console.warn('⚠️ Peer not found:', peerId);
+      console.warn('Available peers:', Array.from(currentConnections.keys()));
+      return;
+    }
+
+    // Detect if this is a screen share track
+    const isScreenTrack =
+      track.label.toLowerCase().includes('screen') ||
+      track.label.toLowerCase().includes('display') ||
+      stream.id.includes('screen');
+
+    if (isScreenTrack) {
+      console.log('🖥️ Screen track from:', peerId);
+      updatePeerScreenStream(peerId, stream);
+      setActiveSharingPeer(peerId);
+      
+      // Handle screen track ending
+      track.onended = () => {
+        console.log('🛑 Screen track ended:', peerId);
+        updatePeerScreenStream(peerId, null);
+        const state = useRoomStore.getState();
+        if (state.activeSharingPeerId === peerId) {
+          setActiveSharingPeer(null);
         }
-      } else {
-        mergedStream = newStream;
+      };
+    } else {
+      console.log('📹 Camera/mic track from:', peerId);
+      
+      // Build camera stream from all non-screen tracks
+      let cameraStream = peer.cameraStream || new MediaStream();
+      
+      // Add track if not already present
+      const existingTrack = cameraStream.getTrackById(track.id);
+      if (!existingTrack) {
+        cameraStream.addTrack(track);
       }
+      
+      updatePeerCameraStream(peerId, cameraStream);
+      
+      // Handle track ending
+      track.onended = () => {
+        console.log('🛑 Camera track ended:', peerId, track.kind);
+      };
+    }
 
-      updatePeerStream(peerId, mergedStream);
-      console.log('✅ Updated peer stream for', peerId, 'with tracks:', mergedStream.getTracks().map(t => t.kind + ':' + t.label));
-    },
-    [updatePeerStream, peerConnections]
-  );
+    // Update merged stream (for backwards compatibility)
+    const cameraStream = peer.cameraStream;
+    const screenStreamObj = peer.screenStream;
+    const allTracks = [
+      ...(cameraStream?.getTracks() || []),
+      ...(screenStreamObj?.getTracks() || []),
+    ];
+    const mergedStream = new MediaStream(allTracks);
+    updatePeerStream(peerId, mergedStream);
+
+    console.log('✅ Peer streams updated:', {
+      peer: peerId,
+      camera: cameraStream?.getTracks().length || 0,
+      screen: screenStreamObj?.getTracks().length || 0,
+    });
+  }, [updatePeerStream, updatePeerCameraStream, updatePeerScreenStream, setActiveSharingPeer]);
 
   /**
    * Handle ICE candidate
    */
-  const handleIceCandidate = useCallback(
-    (candidate: RTCIceCandidate, peerId: string) => {
-      if (!myPeerId) {
-        console.warn('⚠️ No peer ID available, skipping ICE candidate');
-        return;
-      }
-
-      console.log(`🧊 Sending ICE candidate to ${peerId}`);
-      webSocketService.send({
-        event: 'candidate',
-        data: {
-          peerId: myPeerId,
-          targetPeerId: peerId,
-          candidate: JSON.stringify(candidate),
-        },
-      });
-    },
-    [myPeerId]
-  );
+  const handleIceCandidate = useCallback((candidate: RTCIceCandidate, peerId: string) => {
+    console.log('🧊 Sending ICE candidate to:', peerId);
+    
+    webSocketService.send({
+      event: 'candidate',
+      data: {
+        peerId: myPeerId,
+        username: myUsername,
+        targetPeerId: peerId,
+        candidate: candidate.toJSON(),
+      },
+    });
+  }, [myPeerId, myUsername]);
 
   /**
-   * Handle peer connection state changes
+   * Handle connection state changes
    */
-  const handleConnectionStateChange = useCallback(
-    (state: RTCPeerConnectionState, peerId: string) => {
-      console.log(`🔌 Connection state with ${peerId}:`, state);
+  const handleConnectionStateChange = useCallback((state: RTCPeerConnectionState, peerId: string) => {
+    console.log(`🔗 Connection state [${peerId}]:`, state);
 
-      if (state === 'connected') {
-        console.log(`✅ Successfully connected to ${peerId}`);
-      } else if (state === 'failed') {
-        console.error(`❌ Connection failed with ${peerId}`);
+    switch (state) {
+      case 'connected':
+        console.log('✅ Connected to:', peerId);
+        break;
+      case 'disconnected':
+        console.warn('⚠️ Disconnected from:', peerId);
+        break;
+      case 'failed':
+      case 'closed':
+        console.error('❌ Connection failed/closed:', peerId);
         removePeerConnection(peerId);
         removeParticipant(peerId);
-      } else if (state === 'disconnected') {
-        console.warn(`⚠️ Disconnected from ${peerId}`);
-        // Don't immediately remove, might reconnect
-      } else if (state === 'closed') {
-        console.log(`🔒 Connection closed with ${peerId}`);
-        removePeerConnection(peerId);
-        removeParticipant(peerId);
-      }
-    },
-    [removePeerConnection, removeParticipant]
-  );
+        break;
+    }
+  }, [removePeerConnection, removeParticipant]);
 
   /**
-   * Create a new peer connection
-   */
-  const createPeerConnection = useCallback(
-    (peerId: string, username: string, isInitiator: boolean, screenStream?: MediaStream) => {
-      console.log(`🔗 Creating peer connection for ${peerId} (${username}), initiator: ${isInitiator}`);
-
-      // Create RTCPeerConnection
-      const pc = webRTCService.createPeerConnection(
-        (candidate) => handleIceCandidate(candidate, peerId),
-        (event) => handleRemoteTrack(event, peerId),
-        (state) => handleConnectionStateChange(state, peerId)
-      );
-
-      // Add local stream to peer connection
-      if (localStream) {
-        console.log('📤 Adding local stream to peer connection:', {
-          audioTracks: localStream.getAudioTracks().length,
-          videoTracks: localStream.getVideoTracks().length,
-          audioEnabled: localStream.getAudioTracks()[0]?.enabled,
-          videoEnabled: localStream.getVideoTracks()[0]?.enabled,
-        });
-        webRTCService.addStreamToPeer(pc, localStream);
-      } else {
-        console.warn('⚠️ No local stream available to add to peer connection');
-      }
-
-      // Add screen stream if provided (for screen sharing)
-      if (screenStream) {
-        console.log('📺 Adding screen stream to new peer connection:', {
-          videoTracks: screenStream.getVideoTracks().length,
-        });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        if (screenTrack) {
-          pc.addTrack(screenTrack, screenStream);
-        }
-      }
-
-      // Store peer connection
-      addPeerConnection(peerId, {
-        id: peerId,
-        connection: pc,
-        username,
-      });
-
-      addParticipant(peerId, username);
-
-      console.log(`✅ Peer connection created for ${username}, total connections:`, peerConnections.size + 1);
-
-      // If initiator, create and send offer
-      if (isInitiator) {
-        createAndSendOffer(peerId, pc);
-      }
-
-      return pc;
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      localStream,
-      handleIceCandidate,
-      handleRemoteTrack,
-      handleConnectionStateChange,
-      addPeerConnection,
-      addParticipant,
-    ]
-  );
-
-  /**
-   * Renegotiate peer connection (create and send new offer)
-   */
-  const renegotiatePeerConnection = useCallback(async (peerId: string) => {
-    const peer = peerConnections.get(peerId);
-    if (!peer) {
-      console.warn(`⚠️ Cannot renegotiate: peer ${peerId} not found`);
-      return;
-    }
-
-    if (!myPeerId || !myUsername) {
-      console.error('❌ Cannot renegotiate: missing peer ID or username');
-      return;
-    }
-
-    try {
-      console.log(`🔄 Renegotiating connection with ${peerId}`);
-      const offer = await webRTCService.createOffer(peer.connection);
-
-      console.log(`📨 Sending renegotiation offer to ${peerId}`);
-      webSocketService.send({
-        event: 'offer',
-        data: {
-          peerId: myPeerId,
-          username: myUsername,
-          targetPeerId: peerId,
-          sdp: offer.sdp,
-        },
-      });
-
-      console.log(`✅ Renegotiation offer sent to ${peerId}`);
-    } catch (error) {
-      console.error(`❌ Error renegotiating with ${peerId}:`, error);
-    }
-  }, [myPeerId, myUsername, peerConnections]);
-
-  /**
-   * Create and send WebRTC offer
+   * Create and send offer
    */
   const createAndSendOffer = useCallback(async (peerId: string, pc: RTCPeerConnection) => {
-    if (!myPeerId || !myUsername) {
-      console.error('❌ Cannot create offer: missing peer ID or username');
-      return;
-    }
-
     try {
-      console.log(`📤 Creating offer for ${peerId}`);
       const offer = await webRTCService.createOffer(pc);
-
-      console.log(`📨 Sending offer to ${peerId}`);
+      
       webSocketService.send({
         event: 'offer',
         data: {
@@ -263,390 +196,375 @@ export const useWebRTCSignaling = (roomId: string, screenStream?: MediaStream, e
           sdp: offer.sdp,
         },
       });
-
-      console.log(`✅ Offer sent to ${peerId}`);
+      
+      console.log('📤 Offer sent to:', peerId);
     } catch (error) {
-      console.error(`❌ Error creating/sending offer to ${peerId}:`, error);
-      // Clean up failed connection
-      removePeerConnection(peerId);
-      removeParticipant(peerId);
+      console.error('❌ Failed to create offer:', error);
     }
-  }, [myPeerId, myUsername, removePeerConnection, removeParticipant]);
+  }, [myPeerId, myUsername]);
 
   /**
-   * Handle WebRTC offer from remote peer
+   * Create and send answer
    */
-  const handleOffer = async (message: OfferMessage) => {
-    const { peerId, username, sdp } = message;
-
-    console.log(`📨 Received offer from ${peerId} (${username})`);
-
-    // Get or create peer connection
-    let peer = peerConnections.get(peerId);
-    let pc: RTCPeerConnection;
-
-    if (!peer) {
-      console.log(`🆕 Creating new peer connection for offer from ${username}`);
-      pc = createPeerConnection(peerId, username, false);
-    } else {
-      console.log(`♻️ Reusing existing peer connection for ${username}`);
-      pc = peer.connection;
-      // Update participant name
-      addParticipant(peerId, username);
-    }
-
+  const createAndSendAnswer = useCallback(async (peerId: string, pc: RTCPeerConnection) => {
     try {
-      console.log(`📥 Setting remote description for ${peerId}`);
-      await webRTCService.setRemoteDescription(pc, {
-        type: 'offer',
-        sdp: sdp,
-      });
-
-      console.log(`📤 Creating answer for ${peerId}`);
       const answer = await webRTCService.createAnswer(pc);
-
-      console.log(`📨 Sending answer to ${peerId}`);
+      
       webSocketService.send({
         event: 'answer',
         data: {
           peerId: myPeerId,
+          username: myUsername,
           targetPeerId: peerId,
           sdp: answer.sdp,
         },
       });
-
-      console.log(`✅ Answer sent to ${peerId}`);
+      
+      console.log('📤 Answer sent to:', peerId);
     } catch (error) {
-      console.error(`❌ Error handling offer from ${peerId}:`, error);
-      // Clean up failed connection
-      removePeerConnection(peerId);
-      removeParticipant(peerId);
+      console.error('❌ Failed to create answer:', error);
     }
-  };
+  }, [myPeerId, myUsername]);
 
   /**
-   * Handle WebRTC answer from remote peer
+   * Create peer connection
    */
-  const handleAnswer = async (message: AnswerMessage) => {
-    const { peerId, sdp } = message;
+  const createPeerConnection = useCallback((
+    peerId: string,
+    username: string,
+    isInitiator: boolean
+  ): RTCPeerConnection => {
+    console.log('🔗 Creating peer connection:', { peerId, username, isInitiator });
 
-    console.log(`📬 Received answer from ${peerId}`);
+    // Create peer connection
+    const pc = webRTCService.createPeerConnection(
+      (candidate: RTCIceCandidate) => handleIceCandidate(candidate, peerId),
+      (event: RTCTrackEvent) => handleRemoteTrack(event, peerId),
+      (state: RTCPeerConnectionState) => handleConnectionStateChange(state, peerId)
+    );
 
-    const peer = peerConnections.get(peerId);
-    if (!peer) {
-      console.error(`❌ Peer connection not found for ${peerId}`);
-      return;
+    // Add to store FIRST (before adding tracks to avoid race condition)
+    addPeerConnection(peerId, { id: peerId, connection: pc, username });
+    addParticipant(peerId, username);
+    console.log('✅ Peer added to store:', peerId);
+
+    // Add local tracks
+    if (localStream) {
+      const senders = webRTCService.addStreamToPeer(pc, localStream);
+      console.log(`📤 Added ${senders.length} local tracks to:`, peerId);
     }
 
-    try {
-      console.log(`📥 Setting remote description for ${peerId}`);
-      await webRTCService.setRemoteDescription(peer.connection, {
-        type: 'answer',
-        sdp: sdp,
-      });
-
-      console.log(`✅ Remote description set for ${peerId}`);
-      console.log(`🔗 Connection state: ${peer.connection.connectionState}`);
-      console.log(`🧊 ICE connection state: ${peer.connection.iceConnectionState}`);
-    } catch (error) {
-      console.error(`❌ Error handling answer from ${peerId}:`, error);
-      // Clean up failed connection
-      removePeerConnection(peerId);
-      removeParticipant(peerId);
+    // Add screen tracks if sharing
+    if (screenStream) {
+      const senders = webRTCService.addStreamToPeer(pc, screenStream);
+      console.log(`📤 Added ${senders.length} screen tracks to:`, peerId);
     }
-  };
+
+    // Handle negotiation
+    pc.onnegotiationneeded = async () => {
+      if (isInitiator && myPeerId && myUsername) {
+        console.log('🤝 Negotiation needed with:', peerId);
+        await createAndSendOffer(peerId, pc);
+      }
+    };
+
+    // Initiate if we're the caller
+    if (isInitiator) {
+      createAndSendOffer(peerId, pc);
+    }
+
+    return pc;
+  }, [
+    myPeerId,
+    myUsername,
+    localStream,
+    screenStream,
+    handleIceCandidate,
+    handleRemoteTrack,
+    handleConnectionStateChange,
+    addPeerConnection,
+    addParticipant,
+    createAndSendOffer,
+  ]);
 
   /**
-   * Handle ICE candidate
+   * Handle signaling messages
    */
-  const handleCandidate = async (message: CandidateMessage) => {
-    const { peerId, candidate: candidateStr } = message;
+  const handleSignalingMessage = useCallback(async (message: WebSocketMessage) => {
+    switch (message.event) {
+      case 'peers': {
+        const data = message.data;
+        setMyPeerId(data.yourId);
+        setIsHost(data.isHost);
+        setHostId(data.hostId);
+        setRoomLocked(data.roomLocked ?? false);
 
-    const peer = peerConnections.get(peerId);
-    if (!peer) {
-      console.warn(`⚠️ Received ICE candidate for unknown peer: ${peerId}`);
-      return;
-    }
+        console.log('👥 Received peers list:', {
+          yourId: data.yourId,
+          isHost: data.isHost,
+          peersCount: data.peers?.length || 0,
+        });
 
-    try {
-      console.log(`🧊 Adding ICE candidate from ${peerId}`);
-      const candidate = JSON.parse(candidateStr) as RTCIceCandidateInit;
-      await webRTCService.addIceCandidate(peer.connection, candidate);
-      console.log(`✅ ICE candidate added from ${peerId}`);
-    } catch (error) {
-      console.error(`❌ Error adding ICE candidate from ${peerId}:`, error);
-      // Don't remove connection for ICE candidate errors, they might still connect
-    }
-  };
+        // Create connections to existing peers
+        (data.peers || []).forEach((peer: any) => {
+          const peerId = typeof peer === 'string' ? peer : peer.peerId;
+          const username = typeof peer === 'string' ? `User ${peer.slice(-4)}` : peer.username;
 
-  /**
-   * Handle signaling messages from WebSocket
-   */
-  const handleSignalingMessage = useCallback(
-    async (message: WebSocketMessage) => {
-      switch (message.event) {
-        case 'peers': {
-          const data = message.data as PeersMessage;
-          console.log('Received peers list:', data);
-          console.log('Peers details:', {
-            yourId: data.yourId,
-            isHost: data.isHost,
-            hostId: data.hostId,
-            peers: data.peers,
-            roomLocked: data.roomLocked
-          });
-
-          // Set our peer ID and role
-          setMyPeerId(data.yourId);
-          setIsHost(data.isHost);
-          setHostId(data.hostId);
-          
-          if (data.roomLocked !== undefined) {
-            setRoomLocked(data.roomLocked);
-          }
-
-          // Create peer connections for existing peers
-          if (data.peers && data.peers.length > 0) {
-            console.log(`🔗 Connecting to ${data.peers.length} existing peer(s)`);
-            
-            data.peers.forEach((peerId) => {
-              if (peerId !== data.yourId && !peerConnections.has(peerId)) {
-                // We are the initiator for existing peers
-                const username = `User ${peerId.substr(-4)}`;
-                
-                if (localStream) {
-                  console.log(`📞 Initiating connection to peer: ${peerId}`);
-                  createPeerConnection(peerId, username, true, screenStream);
-                } else {
-                  console.log(`⏳ Deferring connection to peer: ${peerId} (waiting for local stream)`);
-                  setPendingPeers(prev => [...prev, { peerId, username, isInitiator: true }]);
-                }
-              }
-            });
-          } else {
-            console.log('📭 No existing peers in the room');
-          }
-          break;
-        }
-
-        case 'peer-joined': {
-          const data = message.data as PeerJoinedMessage;
-          console.log('👤 Peer joined:', data.peerId, data.username);
-          console.log('Current peer connections before adding:', Array.from(peerConnections.keys()));
-
-          if (data.peerId !== myPeerId) {
-            if (!peerConnections.has(data.peerId)) {
-              // Create peer connection and wait for their offer (they are the initiator)
-              if (localStream) {
-                console.log(`🤝 Preparing to receive offer from: ${data.username}`);
-                createPeerConnection(data.peerId, data.username, false, screenStream);
-              } else {
-                console.log(`⏳ Deferring connection setup for peer: ${data.peerId} (waiting for local stream)`);
-                setPendingPeers(prev => [...prev, { peerId: data.peerId, username: data.username, isInitiator: false }]);
-              }
-            } else {
-              // Update username if connection already exists
-              console.log(`📝 Updating username for ${data.peerId}: ${data.username}`);
-              addParticipant(data.peerId, data.username);
+          if (peerId && peerId !== data.yourId) {
+            const currentConnections = useRoomStore.getState().peerConnections;
+            if (!currentConnections.has(peerId)) {
+              createPeerConnection(peerId, username, true);
             }
           }
-          break;
-        }
+        });
+        break;
+      }
 
-        case 'peer-left': {
-          const data = message.data as PeerLeftMessage;
-          console.log('Peer left:', data.peerId);
+      case 'peer-joined': {
+        const { peerId, username } = message.data as PeerJoinedMessage;
+        console.log('👤 Peer joined:', { peerId, username });
 
-          const peer = peerConnections.get(data.peerId);
-          if (peer) {
-            webRTCService.closePeerConnection(peer.connection);
-            removePeerConnection(data.peerId);
-            removeParticipant(data.peerId);
+        if (peerId && peerId !== myPeerId) {
+          const currentConnections = useRoomStore.getState().peerConnections;
+          if (!currentConnections.has(peerId)) {
+            createPeerConnection(peerId, username, false);
           }
-          break;
+        }
+        break;
+      }
+
+      case 'peer-left': {
+        const { peerId } = message.data as PeerLeftMessage;
+        console.log('👋 Peer left:', peerId);
+
+        const currentConnections = useRoomStore.getState().peerConnections;
+        const peer = currentConnections.get(peerId);
+        if (peer) {
+          webRTCService.closePeerConnection(peer.connection);
+          removePeerConnection(peerId);
+          removeParticipant(peerId);
+        }
+        break;
+      }
+
+      case 'offer': {
+        const data = message.data as OfferMessage;
+        console.log('📥 Received offer from:', data.peerId);
+
+        let currentConnections = useRoomStore.getState().peerConnections;
+        let peer = currentConnections.get(data.peerId);
+
+        // Create peer connection if it doesn't exist
+        if (!peer) {
+          const pc = createPeerConnection(data.peerId, data.username || 'Guest', false);
+          currentConnections = useRoomStore.getState().peerConnections;
+          peer = currentConnections.get(data.peerId);
         }
 
-        case 'offer': {
-          await handleOffer(message.data as OfferMessage);
-          break;
-        }
+        if (peer) {
+          await webRTCService.setRemoteDescription(peer.connection, {
+            type: 'offer',
+            sdp: data.sdp,
+          });
 
-        case 'answer': {
-          await handleAnswer(message.data as AnswerMessage);
-          break;
-        }
+          // Process queued ICE candidates
+          const queue = iceCandidateQueue.current.get(data.peerId);
+          if (queue) {
+            console.log(`🧊 Processing ${queue.length} queued candidates for:`, data.peerId);
+            for (const candidate of queue) {
+              await webRTCService.addIceCandidate(peer.connection, candidate);
+            }
+            iceCandidateQueue.current.delete(data.peerId);
+          }
 
-        case 'candidate': {
-          await handleCandidate(message.data as CandidateMessage);
-          break;
+          await createAndSendAnswer(data.peerId, peer.connection);
         }
+        break;
+      }
 
-        case 'screen-share-started': {
-          console.log('📺 Received screen-share-started event:', message.data);
-          setActiveSharingPeer(message.data.peerId);
-          break;
+      case 'answer': {
+        const data = message.data as AnswerMessage;
+        console.log('📥 Received answer from:', data.peerId);
+
+        const currentConnections = useRoomStore.getState().peerConnections;
+        const peer = currentConnections.get(data.peerId);
+
+        if (peer) {
+          await webRTCService.setRemoteDescription(peer.connection, {
+            type: 'answer',
+            sdp: data.sdp,
+          });
+
+          // Process queued ICE candidates
+          const queue = iceCandidateQueue.current.get(data.peerId);
+          if (queue) {
+            console.log(`🧊 Processing ${queue.length} queued candidates for:`, data.peerId);
+            for (const candidate of queue) {
+              await webRTCService.addIceCandidate(peer.connection, candidate);
+            }
+            iceCandidateQueue.current.delete(data.peerId);
+          }
         }
+        break;
+      }
 
-        case 'screen-share-stopped': {
-          console.log('🛑 Received screen-share-stopped event:', message.data);
+      case 'candidate': {
+        const data = message.data as CandidateMessage;
+        console.log('🧊 Received ICE candidate from:', data.peerId);
+
+        const currentConnections = useRoomStore.getState().peerConnections;
+        const peer = currentConnections.get(data.peerId);
+
+        if (peer) {
+          // Parse candidate if it's a string
+          const candidate = typeof data.candidate === 'string' 
+            ? JSON.parse(data.candidate) 
+            : data.candidate;
+
+          if (peer.connection.remoteDescription) {
+            await webRTCService.addIceCandidate(peer.connection, candidate);
+          } else {
+            // Queue candidate if remote description not yet set
+            if (!iceCandidateQueue.current.has(data.peerId)) {
+              iceCandidateQueue.current.set(data.peerId, []);
+            }
+            iceCandidateQueue.current.get(data.peerId)!.push(candidate);
+            console.log('🧊 Queued ICE candidate for:', data.peerId);
+          }
+        }
+        break;
+      }
+
+      case 'screen-share-started': {
+        const { peerId } = message.data;
+        console.log('🖥️ Peer started screen sharing:', peerId);
+        setActiveSharingPeer(peerId);
+        break;
+      }
+
+      case 'screen-share-stopped': {
+        const { peerId } = message.data;
+        console.log('🛑 Peer stopped screen sharing:', peerId);
+        const state = useRoomStore.getState();
+        if (state.activeSharingPeerId === peerId) {
           setActiveSharingPeer(null);
-          break;
         }
-
-        case 'room-locked': {
-          setRoomLocked(true);
-          break;
-        }
-
-        case 'room-unlocked': {
-          setRoomLocked(false);
-          break;
-        }
-
-        case 'kicked': {
-          alert('You have been removed from the room by the host.');
-          window.location.href = '/';
-          break;
-        }
-
-        case 'raise-hand': {
-          // Handle remote participant raising hand
-          const { peerId, username } = message.data;
-          if (peerId && username) {
-            addRaisedHand(peerId, username);
-          }
-          break;
-        }
-
-        case 'lower-hand': {
-          // Handle remote participant lowering hand
-          const { peerId } = message.data;
-          if (peerId) {
-            removeRaisedHand(peerId);
-          }
-          break;
-        }
-
-        case 'reaction': {
-          // Handle reaction from remote participant
-          const { peerId, emoji } = message.data;
-          if (peerId && emoji) {
-            // Dispatch custom event for VideoPlayer to handle
-            window.dispatchEvent(
-              new CustomEvent('peer-reaction', {
-                detail: { peerId, emoji },
-              })
-            );
-          }
-          break;
-        }
-
-        case 'chat-enabled': {
-          setChatEnabled(true);
-          break;
-        }
-
-        case 'chat-disabled': {
-          setChatEnabled(false);
-          break;
-        }
-
-        default:
-          console.log('Unknown signaling event:', message.event);
+        break;
       }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      myPeerId,
-      peerConnections,
-      createPeerConnection,
-      setMyPeerId,
-      setIsHost,
-      setHostId,
-      setRoomLocked,
-      removePeerConnection,
-      removeParticipant,
-      setActiveSharingPeer,
-      addRaisedHand,
-      removeRaisedHand,
-      setChatEnabled,
-    ]
-  );
+
+      case 'raise-hand': {
+        const { peerId, username } = message.data;
+        console.log('✋ Hand raised:', username);
+        addRaisedHand(peerId, username);
+        break;
+      }
+
+      case 'lower-hand': {
+        const { peerId } = message.data;
+        console.log('👋 Hand lowered:', peerId);
+        removeRaisedHand(peerId);
+        break;
+      }
+
+      case 'chat-enabled': {
+        setChatEnabled(true);
+        break;
+      }
+
+      case 'chat-disabled': {
+        setChatEnabled(false);
+        break;
+      }
+    }
+  }, [
+    myPeerId,
+    setMyPeerId,
+    setIsHost,
+    setHostId,
+    setRoomLocked,
+    createPeerConnection,
+    removePeerConnection,
+    removeParticipant,
+    createAndSendAnswer,
+    setActiveSharingPeer,
+    addRaisedHand,
+    removeRaisedHand,
+    setChatEnabled,
+  ]);
 
   /**
-   * Create pending peer connections when local stream becomes available
+   * Initialize WebSocket connection
    */
   useEffect(() => {
-    if (!localStream || pendingPeers.length === 0) return;
+    if (!myUsername) {
+      console.log('⏸️ Waiting for username...');
+      return;
+    }
 
-    console.log(`🚀 Creating ${pendingPeers.length} pending peer connection(s) now that local stream is ready`);
+    if (!localStream) {
+      console.log('⏸️ Waiting for local stream...');
+      return;
+    }
 
-    pendingPeers.forEach(({ peerId, username, isInitiator }) => {
-      if (!peerConnections.has(peerId)) {
-        console.log(`📞 Creating deferred connection to peer: ${peerId}`);
-        createPeerConnection(peerId, username, isInitiator, screenStream);
-      }
-    });
+    if (hasJoined.current) {
+      console.log('✅ Already joined');
+      return;
+    }
 
-    setPendingPeers([]);
-  }, [localStream, pendingPeers, createPeerConnection, peerConnections]);
+    const wsUrl = `ws://localhost:8080/room/${roomId}/websocket`;
+    console.log('🔌 Connecting to:', wsUrl, 'with media ready');
 
-  /**
-   * Add local stream to existing peer connections when it becomes available
-   */
-  useEffect(() => {
-    if (!localStream) return;
-
-    console.log('📹 Local stream became available, adding to existing peer connections');
-    
-    peerConnections.forEach((peer, peerId) => {
-      // Check if this peer connection already has tracks
-      const senders = peer.connection.getSenders();
-      const hasVideoTrack = senders.some(sender => sender.track?.kind === 'video');
-      const hasAudioTrack = senders.some(sender => sender.track?.kind === 'audio');
-      
-      if (!hasVideoTrack || !hasAudioTrack) {
-        console.log(`Adding local stream to existing peer ${peerId}`);
-        webRTCService.addStreamToPeer(peer.connection, localStream);
-        
-        // If we're the initiator, we might need to renegotiate
-        if (peer.connection.connectionState === 'connected') {
-          console.log(`Renegotiating with peer ${peerId} after adding local stream`);
-          createAndSendOffer(peerId, peer.connection);
-        }
-      }
-    });
-  }, [localStream, peerConnections, createAndSendOffer]);
-
-  /**
-   * Initialize WebSocket connection and send join message
-   */
-  useEffect(() => {
-    if (!myUsername) return;
-
+    // Subscribe to messages
     const unsubscribe = webSocketService.onMessage(handleSignalingMessage);
+
+    // Connect
+    webSocketService.connect(wsUrl);
 
     // Send join message when connected
     const unsubscribeOpen = webSocketService.onOpen(() => {
-      const tempPeerId = `peer_${Math.random().toString(36).substr(2, 9)}`;
+      const joinPeerId = myPeerId || `peer_${crypto.randomUUID().slice(0, 8)}`;
+      
+      console.log('📤 Sending join:', { peerId: joinPeerId, username: myUsername, hasMedia: true });
       
       webSocketService.send({
         event: 'join',
-        data: {
-          peerId: tempPeerId,
-          username: myUsername,
-        },
+        data: { peerId: joinPeerId, username: myUsername },
       });
+
+      hasJoined.current = true;
     });
 
     return () => {
+      console.log('🧹 Cleaning up WebSocket subscriptions');
       unsubscribe();
       unsubscribeOpen();
     };
-  }, [myUsername, handleSignalingMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, myUsername, localStream]);
+
+  /**
+   * Add screen stream to existing peers when sharing starts
+   */
+  useEffect(() => {
+    if (!screenStream) return;
+
+    console.log('🖥️ Screen stream available, adding to peers...');
+    
+    const currentConnections = useRoomStore.getState().peerConnections;
+    currentConnections.forEach((peer) => {
+      console.log('➕ Adding screen stream to:', peer.id);
+      const addedSenders = webRTCService.addStreamToPeer(peer.connection, screenStream);
+      
+      // Trigger renegotiation if we added tracks
+      if (addedSenders.length > 0) {
+        console.log('🔄 Triggering renegotiation after adding screen tracks');
+        createAndSendOffer(peer.id, peer.connection);
+      }
+    });
+  }, [screenStream, createAndSendOffer]);
+
 
   return {
     createPeerConnection,
-    renegotiatePeerConnection,
   };
-};
+}

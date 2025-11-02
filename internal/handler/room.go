@@ -51,6 +51,7 @@ func RoomWebSocket(c *websocket.Conn) {
 	
 	// Generate a unique peer ID for this connection
 	peerID := uuid.New().String()
+	username := "" // Will be set from the first message
 	
 	log.Printf("Peer %s joining room %s", peerID, roomUUID)
 
@@ -75,12 +76,15 @@ func RoomWebSocket(c *websocket.Conn) {
 		}
 	}
 
-	// Send current list of peers to the new peer
+	// Send current list of peers to the new peer with their usernames
 	room.Peers.ListLock.RLock()
-	existingPeers := make([]string, 0)
+	existingPeers := make([]map[string]interface{}, 0)
 	for _, conn := range room.Peers.Connections {
 		if conn.PeerID != "" && conn.PeerID != peerID {
-			existingPeers = append(existingPeers, conn.PeerID)
+			existingPeers = append(existingPeers, map[string]interface{}{
+				"peerId":   conn.PeerID,
+				"username": conn.Username,
+			})
 		}
 	}
 	room.Peers.ListLock.RUnlock()
@@ -89,10 +93,11 @@ func RoomWebSocket(c *websocket.Conn) {
 	peersMsg := map[string]interface{}{
 		"event": "peers",
 		"data": map[string]interface{}{
-			"peers":    existingPeers,
-			"yourId":   peerID,
-			"isHost":   room.IsHost(peerID),
-			"hostId":   room.GetHostPeerID(),
+			"peers":      existingPeers,
+			"yourId":     peerID,
+			"isHost":     room.IsHost(peerID),
+			"hostId":     room.GetHostPeerID(),
+			"roomLocked": room.IsRoomLocked(),
 		},
 	}
 	c.WriteJSON(peersMsg)
@@ -105,17 +110,40 @@ func RoomWebSocket(c *websocket.Conn) {
 		return
 	}
 
-	// Add this peer to the room with peer ID
-	room.Peers.AddPeerConnectionWithID(peerConnection, c, peerID)
+	// Add this peer to the room with peer ID (username will be updated when join message is received)
+	room.Peers.AddPeerConnectionWithID(peerConnection, c, peerID, "Guest")
 	
-	// Notify all other peers about the new peer
-	joinMsg := map[string]interface{}{
-		"event": "peer-joined",
-		"data": map[string]interface{}{
-			"peerId": peerID,
-		},
-	}
-	room.Peers.BroadcastToOthers(joinMsg, peerID)
+	// Add all existing tracks to this new peer connection (only after connection is established)
+	// We'll do this in a goroutine after a short delay to allow the connection to establish
+	go func(peerConn *webrtc.PeerConnection, pID string) {
+		// Wait a bit for the connection to establish
+		time.Sleep(2 * time.Second)
+		
+		room.Peers.ListLock.RLock()
+		for _, track := range room.Peers.TrackLocals {
+			if peerConn.ConnectionState() == webrtc.PeerConnectionStateConnected {
+				if rtpSender, err := peerConn.AddTrack(track); err != nil {
+					log.Printf("Error adding existing track to new peer %s: %v", pID, err)
+				} else {
+					log.Printf("Added existing track %s to new peer %s", track.ID(), pID)
+					// Read RTCP packets to keep connection alive
+					go func(sender *webrtc.RTPSender) {
+						rtcpBuf := make([]byte, 1500)
+						for {
+							if _, _, rtcpErr := sender.Read(rtcpBuf); rtcpErr != nil {
+								return
+							}
+						}
+					}(rtpSender)
+				}
+			} else {
+				log.Printf("Cannot add existing track to peer %s (connection not ready, state: %s)", pID, peerConn.ConnectionState())
+			}
+		}
+		room.Peers.ListLock.RUnlock()
+	}(peerConnection, peerID)
+	
+	// Note: peer-joined broadcast is sent when we receive the "join" message with username
 
 	defer func() {
 		// Notify others that peer left
@@ -136,27 +164,14 @@ func RoomWebSocket(c *websocket.Conn) {
 	peerConnection.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		log.Printf("Track received from peer %s: %s, Type: %s", peerID, remoteTrack.ID(), remoteTrack.Kind())
 
-		// Create a local track to relay this stream to other peers
-		localTrack := room.Peers.AddTrack(remoteTrack)
+		// Add track to the room for forwarding to other peers
+		localTrack := room.Peers.AddTrack(remoteTrack, peerID)
 		if localTrack == nil {
+			log.Printf("Failed to add track %s from peer %s", remoteTrack.ID(), peerID)
 			return
 		}
 
-		defer room.Peers.RemoveTrack(localTrack)
-
-		// Read RTP packets and relay to local track
-		rtpBuf := make([]byte, 1400)
-		for {
-			i, _, readErr := remoteTrack.Read(rtpBuf)
-			if readErr != nil {
-				return
-			}
-
-			// Write RTP packet to all other peers
-			if _, err := localTrack.Write(rtpBuf[:i]); err != nil {
-				return
-			}
-		}
+		log.Printf("Successfully added track %s from peer %s to room", remoteTrack.ID(), peerID)
 	})
 
 	// Handle ICE connection state changes
@@ -209,9 +224,87 @@ func RoomWebSocket(c *websocket.Conn) {
 
 		// Handle messages for the server
 		switch event {
+		case "ping":
+			// Respond to ping with pong to keep connection alive
+			// No action needed, just don't log/error
+			continue
+			
 		case "join":
-			// Already handled above
-			log.Printf("Peer %s joined", peerID)
+			// Extract and store username
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				if usernameVal, hasUsername := data["username"].(string); hasUsername && usernameVal != "" {
+					username = usernameVal
+					// Update the peer's username
+					room.Peers.ListLock.Lock()
+					for i := range room.Peers.Connections {
+						if room.Peers.Connections[i].PeerID == peerID {
+							room.Peers.Connections[i].Username = username
+							break
+						}
+					}
+					room.Peers.ListLock.Unlock()
+					log.Printf("Peer %s set username to: %s", peerID, username)
+				}
+			}
+			
+			// Notify other peers about the new peer with username
+			joinMsgWithUsername := map[string]interface{}{
+				"event": "peer-joined",
+				"data": map[string]interface{}{
+					"peerId":   peerID,
+					"username": username,
+				},
+			}
+			room.Peers.BroadcastToOthers(joinMsgWithUsername, peerID)
+			
+			
+		case "offer":
+			// WebRTC offer - forward to target peer
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				if targetPeerID, hasTarget := data["targetPeerId"].(string); hasTarget {
+					log.Printf("📨 Forwarding offer from %s to %s", peerID, targetPeerID)
+					data["peerId"] = peerID
+					delete(data, "targetPeerId")
+					
+					forwardMsg := map[string]interface{}{
+						"event": "offer",
+						"data":  data,
+					}
+					room.Peers.SendToPeer(forwardMsg, targetPeerID)
+				}
+			}
+			
+		case "answer":
+			// WebRTC answer - forward to target peer
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				if targetPeerID, hasTarget := data["targetPeerId"].(string); hasTarget {
+					log.Printf("📬 Forwarding answer from %s to %s", peerID, targetPeerID)
+					data["peerId"] = peerID
+					delete(data, "targetPeerId")
+					
+					forwardMsg := map[string]interface{}{
+						"event": "answer",
+						"data":  data,
+					}
+					room.Peers.SendToPeer(forwardMsg, targetPeerID)
+				}
+			}
+			
+		case "candidate":
+			// ICE candidate - forward to target peer
+			if data, ok := msg["data"].(map[string]interface{}); ok {
+				if targetPeerID, hasTarget := data["targetPeerId"].(string); hasTarget {
+					log.Printf("🧊 Forwarding ICE candidate from %s to %s", peerID, targetPeerID)
+					data["peerId"] = peerID
+					delete(data, "targetPeerId")
+					
+					forwardMsg := map[string]interface{}{
+						"event": "candidate",
+						"data":  data,
+					}
+					room.Peers.SendToPeer(forwardMsg, targetPeerID)
+				}
+			}
 			
 		case "request-screen-share":
 			// Participant requesting screen share permission

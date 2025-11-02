@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
+	"github.com/google/uuid"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -39,6 +40,9 @@ func StreamWebSocket(c *websocket.Conn) {
 	}
 
 	stream := w.CreateStream(streamUUID)
+	
+	// Generate a unique peer ID for this connection
+	peerID := uuid.New().String()
 
 	peerConnection, err := webrtc.NewPeerConnection(w.RoomConfig)
 	if err != nil {
@@ -47,7 +51,7 @@ func StreamWebSocket(c *websocket.Conn) {
 		return
 	}
 
-	stream.Peers.AddPeerConnection(peerConnection, c)
+	stream.Peers.AddPeerConnectionWithID(peerConnection, c, peerID, "Streamer")
 
 	defer func() {
 		stream.Peers.RemovePeerConnection(peerConnection)
@@ -57,7 +61,7 @@ func StreamWebSocket(c *websocket.Conn) {
 	peerConnection.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		log.Printf("Stream track received: %s, Type: %s", remoteTrack.ID(), remoteTrack.Kind())
 
-		localTrack := stream.Peers.AddTrack(remoteTrack)
+		localTrack := stream.Peers.AddTrack(remoteTrack, peerID)
 		if localTrack == nil {
 			return
 		}

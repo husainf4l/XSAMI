@@ -14,6 +14,7 @@ type PeerConnectionState struct {
 	PeerConnection *webrtc.PeerConnection
 	Websocket      *ThreadSafeWriter
 	PeerID         string
+	Username       string // Added to store peer username
 }
 
 // ThreadSafeWriter wraps websocket connection with mutex for thread safety
@@ -34,15 +35,37 @@ type Peers struct {
 	ListLock    sync.RWMutex
 	Connections []PeerConnectionState
 	TrackLocals map[string]*webrtc.TrackLocalStaticRTP
+	// Track which tracks belong to which peer (peerID -> trackID -> track)
+	PeerTracks  map[string]map[string]*webrtc.TrackLocalStaticRTP
 }
 
 // AddTrack adds a new track to the peer connections
-func (p *Peers) AddTrack(t *webrtc.TrackRemote) *webrtc.TrackLocalStaticRTP {
+func (p *Peers) AddTrack(t *webrtc.TrackRemote, peerID string) *webrtc.TrackLocalStaticRTP {
 	p.ListLock.Lock()
 	defer func() {
 		p.ListLock.Unlock()
 		p.SignalPeerConnections()
 	}()
+
+	// Initialize peer tracks map if needed
+	if p.PeerTracks == nil {
+		p.PeerTracks = make(map[string]map[string]*webrtc.TrackLocalStaticRTP)
+	}
+	if p.PeerTracks[peerID] == nil {
+		p.PeerTracks[peerID] = make(map[string]*webrtc.TrackLocalStaticRTP)
+	}
+
+	// Check if this peer already has a track of the same kind
+	var oldTrack *webrtc.TrackLocalStaticRTP
+	for trackID, track := range p.PeerTracks[peerID] {
+		if track.Kind() == t.Kind() {
+			oldTrack = track
+			delete(p.TrackLocals, trackID)
+			delete(p.PeerTracks[peerID], trackID)
+			log.Printf("Replacing old %s track %s with new track %s for peer %s", t.Kind(), trackID, t.ID(), peerID)
+			break
+		}
+	}
 
 	// Create a new track
 	trackLocal, err := webrtc.NewTrackLocalStaticRTP(
@@ -56,6 +79,52 @@ func (p *Peers) AddTrack(t *webrtc.TrackRemote) *webrtc.TrackLocalStaticRTP {
 	}
 
 	p.TrackLocals[t.ID()] = trackLocal
+	p.PeerTracks[peerID][t.ID()] = trackLocal
+
+	// If we had an old track, we need to replace it in all peer connections
+	if oldTrack != nil {
+		// Replace the old track with the new one in all peer connections
+		for i := range p.Connections {
+			if p.Connections[i].PeerConnection.ConnectionState() == webrtc.PeerConnectionStateConnected {
+				// Find the sender for the old track and replace it
+				senders := p.Connections[i].PeerConnection.GetSenders()
+				for _, sender := range senders {
+					if sender.Track() == oldTrack {
+						if replaceErr := sender.ReplaceTrack(trackLocal); replaceErr != nil {
+							log.Printf("Error replacing track for peer %s: %v", p.Connections[i].PeerID, replaceErr)
+						} else {
+							log.Printf("Replaced track for peer %s", p.Connections[i].PeerID)
+						}
+						break
+					}
+				}
+			}
+		}
+	} else {
+		// Add this track to all existing peer connections that are connected
+		for i := range p.Connections {
+			// Only add track to connected peer connections
+			if p.Connections[i].PeerConnection.ConnectionState() == webrtc.PeerConnectionStateConnected {
+				if rtpSender, addTrackErr := p.Connections[i].PeerConnection.AddTrack(trackLocal); addTrackErr != nil {
+					log.Printf("Error adding track to peer %s: %v", p.Connections[i].PeerID, addTrackErr)
+				} else {
+					log.Printf("Added track %s to connected peer %s", trackLocal.ID(), p.Connections[i].PeerID)
+					// Read RTCP packets to keep connection alive
+					go func(sender *webrtc.RTPSender, peerID string) {
+						rtcpBuf := make([]byte, 1500)
+						for {
+							if _, _, rtcpErr := sender.Read(rtcpBuf); rtcpErr != nil {
+								return
+							}
+						}
+					}(rtpSender, p.Connections[i].PeerID)
+				}
+			} else {
+				log.Printf("Skipping track addition to peer %s (not connected, state: %s)", p.Connections[i].PeerID, p.Connections[i].PeerConnection.ConnectionState())
+			}
+		}
+	}
+
 	return trackLocal
 }
 
@@ -135,11 +204,11 @@ func (p *Peers) dispatchKeyFrameFunc() bool {
 
 // AddPeerConnection adds a new peer connection to the room
 func (p *Peers) AddPeerConnection(peerConnection *webrtc.PeerConnection, ws *websocket.Conn) {
-	p.AddPeerConnectionWithID(peerConnection, ws, "")
+	p.AddPeerConnectionWithID(peerConnection, ws, "", "Guest")
 }
 
 // AddPeerConnectionWithID adds a new peer connection with a specific ID
-func (p *Peers) AddPeerConnectionWithID(peerConnection *webrtc.PeerConnection, ws *websocket.Conn, peerID string) {
+func (p *Peers) AddPeerConnectionWithID(peerConnection *webrtc.PeerConnection, ws *websocket.Conn, peerID string, username string) {
 	p.ListLock.Lock()
 	defer p.ListLock.Unlock()
 
@@ -148,7 +217,8 @@ func (p *Peers) AddPeerConnectionWithID(peerConnection *webrtc.PeerConnection, w
 		Websocket: &ThreadSafeWriter{
 			Conn: ws,
 		},
-		PeerID: peerID,
+		PeerID:   peerID,
+		Username: username,
 	})
 }
 
